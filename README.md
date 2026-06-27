@@ -108,12 +108,6 @@ Presets are `.json` files stored in the `Presets/` directory. Each preset saves 
 
 ---
 
-## Supported Providers
-
-`ollama`, `google`, `anthropic`, `openai`, `mistral`, `cohere`, `groq`, `xai`, `lmstudio`, `llamacpp`
-
----
-
 ## Architecture
 
 ### Project layout
