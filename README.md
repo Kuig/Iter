@@ -57,6 +57,7 @@ preset = Preset(node_prompt="Summarize this section.", node_mode="section")
 config = AppConfig(provider="ollama", model_name="gemma4:12b")
 result = run_iter(input_file="doc.md", output_file="out.md", preset=preset, config=config)
 print(result.results)
+
 ### Windows Context Menu Integration
 
 You can integrate Iter into the Windows File Explorer context menu. This lets you right-click any `.md` or `.markdown` file and process it directly with any of your saved presets in a single click.
