@@ -1,0 +1,9 @@
+{
+  "provider": "ollama",
+  "model_name": "gemma4:12b",
+  "embedding_provider": "ollama",
+  "embedding_model": "bge-m3",
+  "temperature": 0.7,
+  "ollama_url": "http://localhost:11434",
+  "thinking": false
+}

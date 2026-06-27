@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "itertool"
+version = "0.1.0"
+description = "Iter - Iterative node-based document processor."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp",
+    "streamlit",
+]
+
+[project.scripts]
+iter = "itertool.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["itertool*"]

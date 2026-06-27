@@ -1,0 +1,21 @@
+{
+  "name": "empty",
+  "system_prompt": "",
+  "node_mode": "paragraph",
+  "preprocessing_prompt": "",
+  "node_prompt": "",
+  "postprocessing_prompt": "",
+  "include_preprocessed_context": false,
+  "heading_handling": "report_unprocessed",
+  "non_text_handling": "report_unprocessed",
+  "compute_similarity": false,
+  "show_similarity_separator": true,
+  "postprocess_attach_input": false,
+  "postprocess_attach_preprocessed": false,
+  "postprocess_attach_results": true,
+  "output_include_preprocessed": false,
+  "output_include_processed": true,
+  "output_include_postprocessed": false,
+  "save_preprocessed_separately": false,
+  "save_postprocessed_separately": false
+}

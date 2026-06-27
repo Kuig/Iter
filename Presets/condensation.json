@@ -1,0 +1,21 @@
+{
+  "name": "condensation",
+  "system_prompt": "You are a professional editor. Your goal is to condense text sections making them more concise, clear and direct, eliminating redundancies. Never add information not present in the original text. Respond only with the condensed text, no explanations or comments.",
+  "node_mode": "section",
+  "preprocessing_prompt": "",
+  "node_prompt": "Condense the following section of text, preserving the original meaning and tone without discarding information.\n\nOriginal text:\n{node}\n\nCondensed text:",
+  "postprocessing_prompt": "Act as a quality reviewer. You will be given the condensed sections of a document. Verify that no key information has been lost and that the meaning is preserved throughout. List any discrepancies or loss of critical information. If everything is correct, confirm that the condensation is faithful.",
+  "include_preprocessed_context": false,
+  "heading_handling": "report_unprocessed",
+  "non_text_handling": "report_unprocessed",
+  "compute_similarity": true,
+  "show_similarity_separator": true,
+  "postprocess_attach_input": true,
+  "postprocess_attach_preprocessed": false,
+  "postprocess_attach_results": true,
+  "output_include_preprocessed": false,
+  "output_include_processed": true,
+  "output_include_postprocessed": false,
+  "save_preprocessed_separately": false,
+  "save_postprocessed_separately": true
+}
