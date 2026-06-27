@@ -57,7 +57,19 @@ preset = Preset(node_prompt="Summarize this section.", node_mode="section")
 config = AppConfig(provider="ollama", model_name="gemma4:12b")
 result = run_iter(input_file="doc.md", output_file="out.md", preset=preset, config=config)
 print(result.results)
-```
+### Windows Context Menu Integration
+
+You can integrate Iter into the Windows File Explorer context menu. This lets you right-click any `.md` or `.markdown` file and process it directly with any of your saved presets in a single click.
+
+1. Open the `Windows Integration` directory.
+2. Run the PowerShell script to scan your `Presets/` directory and generate the custom registry entries:
+   ```powershell
+   PowerShell -ExecutionPolicy Bypass -File .\generate_registry_files.ps1
+   ```
+3. Double-click the generated `register.reg` file to merge it into the Windows Registry.
+4. To remove the context menu entries, double-click the `unregister.reg` file.
+
+*Note: If you add, rename, or delete a preset in the `Presets/` folder, simply rerun the PowerShell script and merge the new `register.reg` to keep the context menu in sync.*
 
 ---
 
