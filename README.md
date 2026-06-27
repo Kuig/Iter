@@ -57,6 +57,7 @@ preset = Preset(node_prompt="Summarize this section.", node_mode="section")
 config = AppConfig(provider="ollama", model_name="gemma4:12b")
 result = run_iter(input_file="doc.md", output_file="out.md", preset=preset, config=config)
 print(result.results)
+```
 
 ### Windows Context Menu Integration
 
