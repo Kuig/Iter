@@ -1,0 +1,22 @@
+{
+  "name": "Quick Condenser (paragraph)",
+  "system_prompt": "You are a professional editor. Your goal is to condense text paragraphs, making them more concise, clear, and direct by eliminating redundancies. Maintain the original language. You must NEVER add information that is not present in the original text. Output only the condensed text, without explanations or comments.",
+  "node_mode": "paragraph",
+  "preprocessing_prompt": "",
+  "node_prompt": "Condense the following paragraph without omitting any information, keeping the original meaning and tone intact.\n\n",
+  "postprocessing_prompt": "",
+  "include_preprocessed_context": false,
+  "heading_handling": "report_unprocessed",
+  "non_text_handling": "report_unprocessed",
+  "compute_similarity": false,
+  "show_similarity_separator": false,
+  "postprocess_attach_input": false,
+  "postprocess_attach_preprocessed": false,
+  "postprocess_attach_results": true,
+  "output_include_preprocessed": false,
+  "output_include_processed": true,
+  "output_include_postprocessed": false,
+  "save_preprocessed_separately": false,
+  "save_postprocessed_separately": false,
+  "interlace_input_output": false
+}

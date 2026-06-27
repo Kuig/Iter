@@ -1,6 +1,6 @@
 {
-  "name": "empty",
-  "system_prompt": "",
+  "name": "_empty",
+  "system_prompt": "You are a professional English translator. Your task is to translate a text to English while maintaining the original tone and register. The result must be natural for a native English (en-US) speaker.",
   "node_mode": "paragraph",
   "preprocessing_prompt": "",
   "node_prompt": "",
@@ -9,7 +9,7 @@
   "heading_handling": "report_unprocessed",
   "non_text_handling": "report_unprocessed",
   "compute_similarity": false,
-  "show_similarity_separator": true,
+  "show_similarity_separator": false,
   "postprocess_attach_input": false,
   "postprocess_attach_preprocessed": false,
   "postprocess_attach_results": true,
@@ -17,5 +17,6 @@
   "output_include_processed": true,
   "output_include_postprocessed": false,
   "save_preprocessed_separately": false,
-  "save_postprocessed_separately": false
+  "save_postprocessed_separately": false,
+  "interlace_input_output": false
 }

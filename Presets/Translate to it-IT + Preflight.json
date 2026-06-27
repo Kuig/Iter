@@ -1,0 +1,22 @@
+{
+  "name": "Translate to it-IT + Preflight",
+  "system_prompt": "You are a professional Italian translator. Your task is to translate a text to Italian while maintaining the original tone and register. The result must be natural for a native Italian speaker.",
+  "node_mode": "paragraph",
+  "preprocessing_prompt": "Before translating the following document, please specify which terms must remain consistent throughout the text (for instance, terms defined by the author or highly specific technical jargon).\n\nAdditionally, point out any idiomatic expressions, nuances, or technical terms that cannot be fully preserved in the translation.\n\nText to be checked:\n\n",
+  "node_prompt": "Translate the following text into Italian.\nProvide a single proposal that is faithful to the original and natural for a native speaker. \nMaintain original formatting. \nProvide only the translation. \nDo not end with questions or offers of help. \n\nText to be translated:\n\n",
+  "postprocessing_prompt": "",
+  "include_preprocessed_context": true,
+  "heading_handling": "standalone_nodes",
+  "non_text_handling": "standalone_nodes",
+  "compute_similarity": true,
+  "show_similarity_separator": false,
+  "postprocess_attach_input": false,
+  "postprocess_attach_preprocessed": false,
+  "postprocess_attach_results": true,
+  "output_include_preprocessed": false,
+  "output_include_processed": true,
+  "output_include_postprocessed": false,
+  "save_preprocessed_separately": true,
+  "save_postprocessed_separately": false,
+  "interlace_input_output": false
+}

@@ -1,0 +1,22 @@
+{
+  "name": "Condenser (section) + Check",
+  "system_prompt": "You are a professional editor. Your goal is to condense sections of text to make them more fluid and concise, eliminating repetitions between paragraphs. Maintain the original language. You must NEVER add information that is not present in the original text. Keep the line breaks to separate concepts if necessary. Output only the condensed text.",
+  "node_mode": "section",
+  "preprocessing_prompt": "",
+  "node_prompt": "Condense the following section of text (consisting of one or more paragraphs) while keeping the original meaning and tone intact.\n\n",
+  "postprocessing_prompt": "I'm providing you with the original text and the condensed version of an entire document. Act as a quality reviewer. Your task is to verify that no key information has been lost and that the original meaning remains intact. List any discrepancies or loss of critical data. If everything is correct, confirm that the summary is accurate.\n\n",
+  "include_preprocessed_context": false,
+  "heading_handling": "report_unprocessed",
+  "non_text_handling": "report_unprocessed",
+  "compute_similarity": true,
+  "show_similarity_separator": false,
+  "postprocess_attach_input": true,
+  "postprocess_attach_preprocessed": false,
+  "postprocess_attach_results": true,
+  "output_include_preprocessed": false,
+  "output_include_processed": true,
+  "output_include_postprocessed": false,
+  "save_preprocessed_separately": false,
+  "save_postprocessed_separately": true,
+  "interlace_input_output": false
+}
