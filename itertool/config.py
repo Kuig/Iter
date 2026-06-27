@@ -34,17 +34,24 @@ class AppConfig:
     thinking: bool = False
 
     @classmethod
-    def load(cls, path: str | Path = _PROJECT_ROOT / "config.json") -> AppConfig:
+    def load(cls, path: str | Path | None = None) -> AppConfig:
         """Load configuration from a JSON file with fallback defaults.
 
+        Checks the current working directory first, falling back to the package root.
+
         Args:
-            path: Path to the configuration file.
+            path: Optional path to the configuration file.
 
         Returns:
             An AppConfig instance populated from the file,
             falling back to field defaults for any missing keys.
         """
-        path = Path(path)
+        if path is None:
+            cwd_path = Path.cwd() / "config.json"
+            path = cwd_path if cwd_path.exists() else _PROJECT_ROOT / "config.json"
+        else:
+            path = Path(path)
+
         if not path.exists():
             return cls()
         with open(path, encoding="utf-8") as f:

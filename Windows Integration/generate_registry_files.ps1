@@ -3,6 +3,16 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectDir = (Get-Item $ScriptDir).Parent.FullName
 $IterPath = Join-Path $ProjectDir ".venv\Scripts\iter.exe"
 
+# Fallback: if not found in local .venv, check if it's installed in the active system/virtual environment PATH
+if (-not (Test-Path $IterPath)) {
+    $SystemIter = Get-Command iter -ErrorAction SilentlyContinue | Where-Object { $_.Extension -eq ".exe" -or $_.Extension -eq "" } | Select-Object -First 1
+    if ($SystemIter) {
+        $IterPath = $SystemIter.Source
+    } else {
+        Write-Warning "Could not find iter.exe in .venv or system PATH. The registry file will default to: $IterPath"
+    }
+}
+
 # Format paths for Windows Registry
 $EscapedIterPath = $IterPath.Replace("\", "\\")
 
