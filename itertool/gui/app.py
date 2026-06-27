@@ -28,7 +28,9 @@ st.set_page_config(
 
 # ── Presets directory ─────────────────────────────────────────────────────────
 
-_PRESETS_DIR = _PKG_ROOT / "Presets"
+# Always use the current working directory's Presets folder to remain
+# consistent with the CLI and support non-editable production installs.
+_PRESETS_DIR = Path.cwd() / "Presets"
 _PRESETS_DIR.mkdir(exist_ok=True)
 
 _PROVIDERS = [
