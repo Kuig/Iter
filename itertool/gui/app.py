@@ -119,7 +119,7 @@ def _init_state() -> None:
         # File paths
         "input_path": "",
         "output_path": "",
-        # Model settings
+        # Model settings (bound directly to widget keys)
         "provider": cfg.provider,
         "model_name": cfg.model_name,
         "embedding_provider": cfg.embedding_provider,
@@ -127,36 +127,34 @@ def _init_state() -> None:
         "temperature": cfg.temperature,
         "ollama_url": cfg.ollama_url,
         "thinking": cfg.thinking,
-        # Preset fields
+        # Preset fields (bound directly to widget keys)
         "system_prompt": (
             "You are a professional editor. "
             "Respond only with the requested output, no greetings, no final questions."
         ),
-        # Preset
         "preset_name": "",
-        # Node mode
         "node_mode": "paragraph",
-        # Phase prompts
         "preprocessing_prompt": "",
         "node_prompt": "",
         "postprocessing_prompt": "",
-        # Phase 2 options
         "include_preprocessed_context": False,
         "heading_handling": "report_unprocessed",
         "non_text_handling": "report_unprocessed",
         "compute_similarity": False,
         "show_similarity_separator": True,
-        # Phase 3 options
         "postprocess_attach_input": False,
         "postprocess_attach_preprocessed": False,
         "postprocess_attach_results": True,
-        # Output options
         "output_include_preprocessed": False,
         "output_include_processed": True,
         "output_include_postprocessed": False,
         "save_preprocessed_separately": False,
         "save_postprocessed_separately": False,
         "interlace_input_output": False,
+        # Widget mapping helper keys (to avoid default value mismatch warnings)
+        "radio_node_mode": "🔹 Paragraph",
+        "sel_heading_handling": "Pass through unchanged",
+        "sel_non_text_handling": "Pass through unchanged",
         # Results
         "result_preprocessed": "",
         "result_processed": "",
@@ -175,7 +173,6 @@ def _load_preset_into_state(preset: Preset) -> None:
     """Write all Preset fields into st.session_state, syncing both properties and widget keys."""
     # System prompt
     st.session_state.system_prompt = preset.system_prompt or st.session_state.system_prompt
-    st.session_state.sb_system_prompt = st.session_state.system_prompt
 
     # Node mode
     st.session_state.node_mode = preset.node_mode
@@ -183,23 +180,13 @@ def _load_preset_into_state(preset: Preset) -> None:
 
     # Prompts
     st.session_state.preprocessing_prompt = preset.preprocessing_prompt
-    st.session_state.ta_preprocessing_prompt = preset.preprocessing_prompt
-
     st.session_state.node_prompt = preset.node_prompt
-    st.session_state.ta_node_prompt = preset.node_prompt
-
     st.session_state.postprocessing_prompt = preset.postprocessing_prompt
-    st.session_state.ta_postprocessing_prompt = preset.postprocessing_prompt
 
     # Phase 2 Options
     st.session_state.include_preprocessed_context = preset.include_preprocessed_context
-    st.session_state.cb_include_preprocessed = preset.include_preprocessed_context
-
     st.session_state.compute_similarity = preset.compute_similarity
-    st.session_state.cb_compute_similarity = preset.compute_similarity
-
     st.session_state.show_similarity_separator = preset.show_similarity_separator
-    st.session_state.cb_show_separator = preset.show_similarity_separator
 
     # Handlings
     st.session_state.heading_handling = preset.heading_handling
@@ -214,32 +201,16 @@ def _load_preset_into_state(preset: Preset) -> None:
 
     # Phase 3 Options
     st.session_state.postprocess_attach_input = preset.postprocess_attach_input
-    st.session_state.cb_pp_attach_input = preset.postprocess_attach_input
-
     st.session_state.postprocess_attach_preprocessed = preset.postprocess_attach_preprocessed
-    st.session_state.cb_pp_attach_preprocessed = preset.postprocess_attach_preprocessed
-
     st.session_state.postprocess_attach_results = preset.postprocess_attach_results
-    st.session_state.cb_pp_attach_results = preset.postprocess_attach_results
 
     # Output Options
     st.session_state.output_include_preprocessed = preset.output_include_preprocessed
-    st.session_state.cb_out_preprocessed = preset.output_include_preprocessed
-
     st.session_state.output_include_processed = preset.output_include_processed
-    st.session_state.cb_out_processed = preset.output_include_processed
-
     st.session_state.output_include_postprocessed = preset.output_include_postprocessed
-    st.session_state.cb_out_postprocessed = preset.output_include_postprocessed
-
     st.session_state.save_preprocessed_separately = preset.save_preprocessed_separately
-    st.session_state.cb_save_preprocessed_sep = preset.save_preprocessed_separately
-
     st.session_state.save_postprocessed_separately = preset.save_postprocessed_separately
-    st.session_state.cb_save_postprocessed_sep = preset.save_postprocessed_separately
-
     st.session_state.interlace_input_output = preset.interlace_input_output
-    st.session_state.cb_interlace = preset.interlace_input_output
 
 
 def _state_to_preset() -> Preset:
@@ -313,50 +284,43 @@ with st.sidebar:
     # ── Model Settings ────────────────────────────────────────────────────────
     st.header("⚙️ Model Settings")
 
-    st.session_state.provider = st.text_input(
+    st.text_input(
         "Provider",
-        value=st.session_state.provider,
-        key="sb_provider",
+        key="provider",
     )
 
-    st.session_state.model_name = st.text_input(
+    st.text_input(
         "Model",
-        value=st.session_state.model_name,
-        key="sb_model_name",
+        key="model_name",
     )
 
-    st.session_state.embedding_provider = st.text_input(
+    st.text_input(
         "Embedding provider",
-        value=st.session_state.embedding_provider,
-        key="sb_embedding_provider",
+        key="embedding_provider",
     )
 
-    st.session_state.embedding_model = st.text_input(
+    st.text_input(
         "Embedding model",
-        value=st.session_state.embedding_model,
-        key="sb_embedding_model",
+        key="embedding_model",
     )
 
-    st.session_state.temperature = st.slider(
+    st.slider(
         "Temperature",
         min_value=0.0,
         max_value=2.0,
-        value=float(st.session_state.temperature),
         step=0.05,
-        key="sb_temperature",
+        key="temperature",
     )
 
-    st.session_state.ollama_url = st.text_input(
+    st.text_input(
         "Ollama URL",
-        value=st.session_state.ollama_url,
-        key="sb_ollama_url",
+        key="ollama_url",
         help="Base URL for the Ollama server (used when provider is 'ollama').",
     )
 
-    st.session_state.thinking = st.toggle(
+    st.toggle(
         "Thinking / reasoning mode",
-        value=st.session_state.thinking,
-        key="sb_thinking",
+        key="thinking",
         help="Enable extended thinking where the provider supports it (e.g. Claude 3.7, Gemini 2.5).",
     )
 
@@ -366,11 +330,10 @@ with st.sidebar:
     st.header("📂 Presets")
     st.caption("System prompt and all processing options are saved per preset.")
 
-    st.session_state.system_prompt = st.text_area(
+    st.text_area(
         "System prompt",
-        value=st.session_state.system_prompt,
         height=100,
-        key="sb_system_prompt",
+        key="system_prompt",
         help="Saved with the preset. Leave empty to use no system prompt.",
     )
 
@@ -443,35 +406,31 @@ st.divider()
 
 with st.expander("**Phase 1 — Preprocessing** *(optional)*", expanded=bool(st.session_state.preprocessing_prompt)):
     st.caption("Single AI call on the entire document. Leave empty to skip.")
-    st.session_state.preprocessing_prompt = st.text_area(
+    st.text_area(
         "Preprocessing prompt",
-        value=st.session_state.preprocessing_prompt,
         height=120,
         label_visibility="collapsed",
         placeholder="E.g.: Extract a structured outline of this document.",
-        key="ta_preprocessing_prompt",
+        key="preprocessing_prompt",
     )
 
 # ── Phase 2: Node Processing ──────────────────────────────────────────────────
 
 with st.expander("**Phase 2 — Node Processing** *(core)*", expanded=True):
     st.caption("This prompt is applied independently to each node. Leave empty to skip.")
-    st.session_state.node_prompt = st.text_area(
+    st.text_area(
         "Node prompt",
-        value=st.session_state.node_prompt,
         height=140,
         label_visibility="collapsed",
         placeholder="E.g.: Condense the following section without losing information.",
-        key="ta_node_prompt",
+        key="node_prompt",
     )
 
     # Node mode radio
-    mode_map = {"paragraph": 0, "section": 1}
     mode_labels = ["🔹 Paragraph", "🔸 Section"]
     mode_val = st.radio(
         "Node granularity",
         options=mode_labels,
-        index=mode_map.get(st.session_state.node_mode, 0),
         horizontal=True,
         key="radio_node_mode",
     )
@@ -481,44 +440,37 @@ with st.expander("**Phase 2 — Node Processing** *(core)*", expanded=True):
     opt_col1, opt_col2 = st.columns(2)
 
     with opt_col1:
-        st.session_state.include_preprocessed_context = st.checkbox(
+        st.checkbox(
             "Include preprocessed as prior context",
-            value=st.session_state.include_preprocessed_context,
-            key="cb_include_preprocessed",
+            key="include_preprocessed_context",
             help="Inject the Phase 1 result as a prior assistant message when calling the node prompt.",
         )
-        st.session_state.compute_similarity = st.checkbox(
+        st.checkbox(
             "Compute cosine similarity",
-            value=st.session_state.compute_similarity,
-            key="cb_compute_similarity",
+            key="compute_similarity",
             help="Compute embedding cosine similarity between original node and AI result.",
         )
-        st.session_state.show_similarity_separator = st.checkbox(
+        st.checkbox(
             "Show §N separator between results",
-            value=st.session_state.show_similarity_separator,
-            key="cb_show_separator",
+            key="show_similarity_separator",
             help="Insert '# §N — node_id — Cosine similarity: score' before each result.",
         )
 
     with opt_col2:
         heading_labels = list(_HEADING_OPTIONS.values())
         heading_keys = list(_HEADING_OPTIONS.keys())
-        heading_idx = heading_keys.index(st.session_state.heading_handling) if st.session_state.heading_handling in heading_keys else 0
         selected_heading = st.selectbox(
             "Heading handling",
             options=heading_labels,
-            index=heading_idx,
             key="sel_heading_handling",
         )
         st.session_state.heading_handling = heading_keys[heading_labels.index(selected_heading)]
 
         non_text_labels = list(_NON_TEXT_OPTIONS.values())
         non_text_keys = list(_NON_TEXT_OPTIONS.keys())
-        non_text_idx = non_text_keys.index(st.session_state.non_text_handling) if st.session_state.non_text_handling in non_text_keys else 0
         selected_non_text = st.selectbox(
             "Non-text handling (tables, code, images)",
             options=non_text_labels,
-            index=non_text_idx,
             key="sel_non_text_handling",
         )
         st.session_state.non_text_handling = non_text_keys[non_text_labels.index(selected_non_text)]
@@ -527,34 +479,30 @@ with st.expander("**Phase 2 — Node Processing** *(core)*", expanded=True):
 
 with st.expander("**Phase 3 — Postprocessing** *(optional)*", expanded=bool(st.session_state.postprocessing_prompt)):
     st.caption("Single AI call after all nodes are processed. Leave empty to skip.")
-    st.session_state.postprocessing_prompt = st.text_area(
+    st.text_area(
         "Postprocessing prompt",
-        value=st.session_state.postprocessing_prompt,
         height=120,
         label_visibility="collapsed",
         placeholder="E.g.: Review the condensed sections for consistency and produce a final report.",
-        key="ta_postprocessing_prompt",
+        key="postprocessing_prompt",
     )
 
     st.markdown("**Attach to the postprocessing prompt:**")
     pp_col1, pp_col2, pp_col3 = st.columns(3)
     with pp_col1:
-        st.session_state.postprocess_attach_input = st.checkbox(
+        st.checkbox(
             "Original input document",
-            value=st.session_state.postprocess_attach_input,
-            key="cb_pp_attach_input",
+            key="postprocess_attach_input",
         )
     with pp_col2:
-        st.session_state.postprocess_attach_preprocessed = st.checkbox(
+        st.checkbox(
             "Preprocessed result",
-            value=st.session_state.postprocess_attach_preprocessed,
-            key="cb_pp_attach_preprocessed",
+            key="postprocess_attach_preprocessed",
         )
     with pp_col3:
-        st.session_state.postprocess_attach_results = st.checkbox(
+        st.checkbox(
             "Node results",
-            value=st.session_state.postprocess_attach_results,
-            key="cb_pp_attach_results",
+            key="postprocess_attach_results",
         )
 
 # ── Output Settings ───────────────────────────────────────────────────────────
@@ -566,42 +514,36 @@ with st.expander("**Output Settings**", expanded=True):
     )
     out_col1, out_col2, out_col3 = st.columns(3)
     with out_col1:
-        st.session_state.output_include_preprocessed = st.checkbox(
+        st.checkbox(
             "Phase 1 — Preprocessed",
-            value=st.session_state.output_include_preprocessed,
-            key="cb_out_preprocessed",
+            key="output_include_preprocessed",
         )
     with out_col2:
-        st.session_state.output_include_processed = st.checkbox(
+        st.checkbox(
             "Phase 2 — Node results",
-            value=st.session_state.output_include_processed,
-            key="cb_out_processed",
+            key="output_include_processed",
         )
     with out_col3:
-        st.session_state.output_include_postprocessed = st.checkbox(
+        st.checkbox(
             "Phase 3 — Postprocessed",
-            value=st.session_state.output_include_postprocessed,
-            key="cb_out_postprocessed",
+            key="output_include_postprocessed",
         )
 
     sep_col1, sep_col2 = st.columns(2)
     with sep_col1:
-        st.session_state.save_preprocessed_separately = st.checkbox(
+        st.checkbox(
             "Save Phase 1 to separate file",
-            value=st.session_state.save_preprocessed_separately,
-            key="cb_save_preprocessed_sep",
+            key="save_preprocessed_separately",
         )
     with sep_col2:
-        st.session_state.save_postprocessed_separately = st.checkbox(
+        st.checkbox(
             "Save Phase 3 to separate file",
-            value=st.session_state.save_postprocessed_separately,
-            key="cb_save_postprocessed_sep",
+            key="save_postprocessed_separately",
         )
 
-    st.session_state.interlace_input_output = st.checkbox(
+    st.checkbox(
         "Interlace original and processed nodes",
-        value=st.session_state.interlace_input_output,
-        key="cb_interlace",
+        key="interlace_input_output",
         help="For each processed node, output the original text followed by the AI response.",
     )
 
