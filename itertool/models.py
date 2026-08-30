@@ -6,6 +6,8 @@ import math
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
+import itertool.logger as logger
+
 
 # ── Preset ─────────────────────────────────────────────────────────────────────
 
@@ -88,7 +90,11 @@ class Preset:
         path = Path(path)
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        unknown = sorted(set(data) - set(known))
+        if unknown:
+            logger.log_warning(f"Ignoring unknown keys in {path}: {', '.join(unknown)}")
+        return cls(**known)
 
     def save(self, path: str | Path) -> None:
         """Save this preset to a JSON file.

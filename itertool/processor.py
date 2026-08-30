@@ -1,15 +1,15 @@
 """Core processing pipeline for Iter.
 
 Implements the three-phase pipeline:
-  Phase 1 — Preprocessing: single AI call on the full document.
-  Phase 2 — Node Processing: same prompt applied independently to each node.
-  Phase 3 — Postprocessing: single AI call on the assembled results.
+  Phase 1 - Preprocessing: single AI call on the full document.
+  Phase 2 - Node Processing: same prompt applied independently to each node.
+  Phase 3 - Postprocessing: single AI call on the assembled results.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from unified_ai_client import call_ai, configure_provider
+from unified_ai_client import call_ai
 from unified_ai_client import get_embedding as _get_embedding_vec
 
 from itertool.config import AppConfig
@@ -148,7 +148,7 @@ def _build_separator(node: Node, similarity: float | None, show: bool) -> str:
     if similarity is not None:
         indicator = get_similarity_indicator(similarity)
         parts.append(f"Cosine similarity: {similarity:.3f} {indicator}")
-    return " — ".join(parts)
+    return " - ".join(parts)
 
 
 def _process_node(
@@ -181,26 +181,32 @@ def _process_node(
         )
 
         if handling == "discard":
-            logger.log_action(f"  Node {node.index} [{node.node_type}] — discarded")
+            logger.log_action(f"  Node {node.index} [{node.node_type}] - discarded")
             return NodeResult(node=node, output="", was_processed=False)
 
         if handling == "report_unprocessed":
-            logger.log_action(f"  Node {node.index} [{node.node_type}] — passed through unchanged")
+            logger.log_action(f"  Node {node.index} [{node.node_type}] - passed through unchanged")
             return NodeResult(node=node, output=node.content, was_processed=False)
 
         if handling == "standalone_nodes":
-            logger.log_action(f"  Node {node.index} [{node.node_type}] — processing as standalone")
+            logger.log_action(f"  Node {node.index} [{node.node_type}] - processing as standalone")
             # Falls through to AI call below
 
         if handling == "merge_next":
-            # merge_next is handled at the caller level (pre-merge), so this
-            # case should not normally reach here. Pass through safely.
-            logger.log_action(f"  Node {node.index} [{node.node_type}] — merge_next (passed through)")
+            # The pre-pass in _run_node_processing merged every heading that had
+            # a following text node. What arrives here is the residue: a heading
+            # at the end of the document, or one followed by another heading, a
+            # table or a code block. There is nothing to merge with.
+            logger.log_action(f"  Node {node.index} [{node.node_type}] - merge_next (passed through)")
             return NodeResult(node=node, output=node.content, was_processed=False)
 
-        # part_of_section is handled at the caller level (section assembly)
+        # The pre-pass absorbed every non-text block that followed a text node.
+        # What arrives here is the residue: a block at the start of the document
+        # or directly after a heading, with no preceding section to join. In
+        # paragraph mode the pre-pass never runs and this handles every block,
+        # which is why _run_node_processing warns about that combination.
         if handling == "part_of_section":
-            logger.log_action(f"  Node {node.index} [{node.node_type}] — included in section (passed through)")
+            logger.log_action(f"  Node {node.index} [{node.node_type}] - included in section (passed through)")
             return NodeResult(node=node, output=node.content, was_processed=False)
 
     # --- AI call ---
@@ -217,7 +223,7 @@ def _process_node(
     # Calculate input length (only the node content characters, not the prompt payload)
     input_len = len(node.content)
     
-    logger.log_ai(f"  Node {node.index} — AI responded (in: {input_len}, out: {len(output)} chars)")
+    logger.log_ai(f"  Node {node.index} - AI responded (in: {input_len}, out: {len(output)} chars)")
 
     # --- Optional cosine similarity ---
     similarity: float | None = None
@@ -267,6 +273,12 @@ def _run_node_processing(
 
     logger.log_separator()
     logger.log_info(f"Phase 2: Node Processing ({preset.node_mode} mode)")
+
+    if preset.non_text_handling == "part_of_section" and preset.node_mode != "section":
+        logger.log_warning(
+            "non_text_handling='part_of_section' requires section mode; "
+            "non-text nodes will pass through unchanged"
+        )
 
     nodes = _resolve_nodes(document_text, preset)
     logger.log_action(f"Found {len(nodes)} nodes. Processing...")
@@ -489,9 +501,8 @@ def run_iter(
         preset = Preset()
 
     # --- Configure providers ---
-    # Always register the Ollama base URL from config so UnifiedAiClient
-    # uses the right server even when provider is not ollama (harmless no-op).
-    configure_provider("ollama", url=config.ollama_url)
+    # Idempotent: a no-op when the interface already applied the same settings.
+    config.apply_to_client()
 
     # --- Load document ---
     if input_text is not None:
@@ -505,7 +516,7 @@ def run_iter(
         )
 
     logger.log_separator()
-    logger.log_info(f"Iter — provider: {config.provider} | model: {config.model_name}")
+    logger.log_info(f"Iter - provider: {config.provider} | model: {config.model_name}")
     logger.log_info(f"Node mode: {preset.node_mode}")
 
     # --- Phase 1: Preprocessing ---

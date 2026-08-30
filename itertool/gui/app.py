@@ -1,8 +1,7 @@
-"""Streamlit GUI for Iter — Iterative Node-Based Document Processor."""
+"""Streamlit GUI for Iter - Iterative Node-Based Document Processor."""
 from __future__ import annotations
 
 import sys
-import json
 from pathlib import Path
 
 # Ensure project root is importable when launched via 'streamlit run gui/app.py'
@@ -11,17 +10,20 @@ sys.path.insert(0, str(_PKG_ROOT))
 
 import streamlit as st
 
+from unified_ai_client import silence_sdks
+
 import itertool.logger as logger
 from itertool.config import AppConfig
 from itertool.models import Preset
 from itertool.processor import run_iter
 
 logger.set_backend("streamlit")
+silence_sdks()
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="Iter — Node Processor",
+    page_title="Iter - Node Processor",
     page_icon="🔁",
     layout="wide",
 )
@@ -49,13 +51,7 @@ _NON_TEXT_OPTIONS = {
     "report_unprocessed": "Pass through unchanged",
     "discard": "Discard",
     "standalone_nodes": "Treat as standalone nodes",
-    "part_of_section": "Include in section (section mode only)",
-}
-
-_OUTPUT_CONTENT_OPTIONS = {
-    "preprocessed": "Preprocessed (Phase 1)",
-    "processed": "Processed — node results (Phase 2)",
-    "postprocessed": "Postprocessed (Phase 3)",
+    "part_of_section": "Include in section",
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -127,6 +123,9 @@ def _init_state() -> None:
         "temperature": cfg.temperature,
         "ollama_url": cfg.ollama_url,
         "thinking": cfg.thinking,
+        "timeout": cfg.timeout,
+        # 0 is the widget's way of saying "leave the model default" (None).
+        "context_size": cfg.context_size or 0,
         # Preset fields (bound directly to widget keys)
         "system_prompt": (
             "You are a professional editor. "
@@ -249,6 +248,8 @@ def _state_to_config() -> AppConfig:
         temperature=st.session_state.temperature,
         ollama_url=st.session_state.ollama_url,
         thinking=st.session_state.thinking,
+        timeout=st.session_state.timeout,
+        context_size=st.session_state.context_size or None,
     )
 
 
@@ -260,7 +261,7 @@ _init_state()
 def _on_load_preset() -> None:
     """Callback executed before rendering to load a preset safely into session state."""
     selected = st.session_state.get("sb_preset_select")
-    if selected and selected != "— Select —":
+    if selected and selected != "- Select -":
         try:
             preset = Preset.load(_PRESETS_DIR / f"{selected}.json")
             _load_preset_into_state(preset)
@@ -324,6 +325,30 @@ with st.sidebar:
         help="Enable extended thinking where the provider supports it (e.g. Claude 3.7, Gemini 2.5).",
     )
 
+    st.number_input(
+        "Request timeout (s)",
+        min_value=1,
+        step=10,
+        key="timeout",
+        help="Per-request timeout registered with the provider.",
+    )
+
+    st.number_input(
+        "Context size (tokens)",
+        min_value=0,
+        step=1024,
+        key="context_size",
+        help="Ollama context window (num_ctx). 0 leaves the model default in place.",
+    )
+
+    if st.button("💾 Save as default", use_container_width=True, key="btn_save_config"):
+        try:
+            target = Path.cwd() / "config.json"
+            _state_to_config().save(target)
+            st.success(f"Saved to {target}")
+        except Exception as e:
+            st.error(f"Save failed: {e}")
+
     st.divider()
 
     # ── Presets ───────────────────────────────────────────────────────────────
@@ -338,9 +363,9 @@ with st.sidebar:
     )
 
     preset_names = _list_presets()
-    selected_preset = st.selectbox(
+    st.selectbox(
         "Load preset",
-        options=["— Select —"] + preset_names,
+        options=["- Select -"] + preset_names,
         index=0,
         key="sb_preset_select",
     )
@@ -404,7 +429,7 @@ st.divider()
 
 # ── Phase 1: Preprocessing ────────────────────────────────────────────────────
 
-with st.expander("**Phase 1 — Preprocessing** *(optional)*", expanded=bool(st.session_state.preprocessing_prompt)):
+with st.expander("**Phase 1 - Preprocessing** *(optional)*", expanded=bool(st.session_state.preprocessing_prompt)):
     st.caption("Single AI call on the entire document. Leave empty to skip.")
     st.text_area(
         "Preprocessing prompt",
@@ -416,7 +441,7 @@ with st.expander("**Phase 1 — Preprocessing** *(optional)*", expanded=bool(st.
 
 # ── Phase 2: Node Processing ──────────────────────────────────────────────────
 
-with st.expander("**Phase 2 — Node Processing** *(core)*", expanded=True):
+with st.expander("**Phase 2 - Node Processing** *(core)*", expanded=True):
     st.caption("This prompt is applied independently to each node. Leave empty to skip.")
     st.text_area(
         "Node prompt",
@@ -453,7 +478,7 @@ with st.expander("**Phase 2 — Node Processing** *(core)*", expanded=True):
         st.checkbox(
             "Show §N separator between results",
             key="show_similarity_separator",
-            help="Insert '# §N — node_id — Cosine similarity: score' before each result.",
+            help="Insert '# §N - Cosine similarity: score' before each result.",
         )
 
     with opt_col2:
@@ -466,8 +491,15 @@ with st.expander("**Phase 2 — Node Processing** *(core)*", expanded=True):
         )
         st.session_state.heading_handling = heading_keys[heading_labels.index(selected_heading)]
 
-        non_text_labels = list(_NON_TEXT_OPTIONS.values())
-        non_text_keys = list(_NON_TEXT_OPTIONS.keys())
+        # part_of_section absorbs a non-text block into the section before it,
+        # so it is meaningless in paragraph mode, where there are no sections.
+        non_text_options = dict(_NON_TEXT_OPTIONS)
+        if st.session_state.node_mode != "section":
+            non_text_options.pop("part_of_section")
+        non_text_labels = list(non_text_options.values())
+        non_text_keys = list(non_text_options.keys())
+        if st.session_state.get("sel_non_text_handling") not in non_text_labels:
+            st.session_state.sel_non_text_handling = non_text_options["report_unprocessed"]
         selected_non_text = st.selectbox(
             "Non-text handling (tables, code, images)",
             options=non_text_labels,
@@ -477,7 +509,7 @@ with st.expander("**Phase 2 — Node Processing** *(core)*", expanded=True):
 
 # ── Phase 3: Postprocessing ───────────────────────────────────────────────────
 
-with st.expander("**Phase 3 — Postprocessing** *(optional)*", expanded=bool(st.session_state.postprocessing_prompt)):
+with st.expander("**Phase 3 - Postprocessing** *(optional)*", expanded=bool(st.session_state.postprocessing_prompt)):
     st.caption("Single AI call after all nodes are processed. Leave empty to skip.")
     st.text_area(
         "Postprocessing prompt",
@@ -515,17 +547,17 @@ with st.expander("**Output Settings**", expanded=True):
     out_col1, out_col2, out_col3 = st.columns(3)
     with out_col1:
         st.checkbox(
-            "Phase 1 — Preprocessed",
+            "Phase 1 - Preprocessed",
             key="output_include_preprocessed",
         )
     with out_col2:
         st.checkbox(
-            "Phase 2 — Node results",
+            "Phase 2 - Node results",
             key="output_include_processed",
         )
     with out_col3:
         st.checkbox(
-            "Phase 3 — Postprocessed",
+            "Phase 3 - Postprocessed",
             key="output_include_postprocessed",
         )
 
@@ -563,7 +595,9 @@ if run_btn:
     else:
         preset = _state_to_preset()
         config = _state_to_config()
-        log_container = st.empty()
+        # The user can change provider or model between runs, so settings are
+        # applied here, where they become effective. No-op when unchanged.
+        config.apply_to_client()
 
         with st.spinner("Processing..."):
             try:
@@ -588,11 +622,11 @@ if st.session_state.result_preprocessed or st.session_state.result_processed or 
     st.subheader("📊 Results")
 
     if st.session_state.result_preprocessed:
-        with st.expander("🔹 Phase 1 — Preprocessed"):
+        with st.expander("🔹 Phase 1 - Preprocessed"):
             st.markdown(st.session_state.result_preprocessed)
 
     if st.session_state.result_processed:
-        with st.expander("🔸 Phase 2 — Node Results", expanded=True):
+        with st.expander("🔸 Phase 2 - Node Results", expanded=True):
             # Show per-node similarity summary if computed
             node_results = st.session_state.result_node_results
             if node_results and any(nr.similarity is not None for nr in node_results):
@@ -602,5 +636,5 @@ if st.session_state.result_preprocessed or st.session_state.result_processed or 
             st.markdown(st.session_state.result_processed)
 
     if st.session_state.result_postprocessed:
-        with st.expander("🔷 Phase 3 — Postprocessed"):
+        with st.expander("🔷 Phase 3 - Postprocessed"):
             st.markdown(st.session_state.result_postprocessed)

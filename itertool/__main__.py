@@ -10,6 +10,7 @@ from unified_ai_client import silence_sdks
 from itertool.processor import run_iter
 from itertool.models import Preset
 from itertool.config import AppConfig
+import itertool.logger as logger
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -20,6 +21,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     """
     try:
         config = AppConfig.load()
+        config.apply_to_client()
 
         if args.preset:
             preset_path = Path("Presets") / f"{args.preset}.json"
@@ -44,7 +46,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             config=config,
         )
     except Exception as exc:
-        print(f"Fatal error: {exc}", file=sys.stderr)
+        logger.log_error(f"Fatal error: {exc}")
         sys.exit(1)
 
 
@@ -54,12 +56,18 @@ def cmd_mcp(args: argparse.Namespace) -> None:
     Args:
         args: Parsed argument namespace (unused).
     """
+    # stdout carries the JSON-RPC stream - the mcp backend keeps the identical
+    # output format but routes it to stderr, where it cannot corrupt the framing.
+    # Selected before anything can log, so no message can reach stdout.
+    logger.set_backend("mcp")
+
     try:
         from mcp.server.fastmcp import FastMCP
     except ImportError:
-        print("'mcp' library not installed. Run: pip install mcp", file=sys.stderr)
+        logger.log_error("'mcp' library not installed. Run: pip install mcp")
         sys.exit(1)
     from itertool.mcp_tools import register_tools
+
     mcp = FastMCP("Iter")
     register_tools(mcp)
     mcp.run()
@@ -71,10 +79,14 @@ def cmd_gui(args: argparse.Namespace) -> None:
     Args:
         args: Parsed argument namespace (unused).
     """
-    subprocess.run([
-        sys.executable, "-m", "streamlit", "run",
-        str(Path(__file__).parent / "gui" / "app.py"),
-    ])
+    try:
+        subprocess.run([
+            sys.executable, "-m", "streamlit", "run",
+            str(Path(__file__).parent / "gui" / "app.py"),
+        ])
+    except Exception as exc:
+        logger.log_error(f"Failed to launch the GUI: {exc}")
+        sys.exit(1)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -85,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="iter",
-        description="Iter — Iterative node-based document processor.",
+        description="Iter - Iterative node-based document processor.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

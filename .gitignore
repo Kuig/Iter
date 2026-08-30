@@ -57,3 +57,25 @@ test_out.md
 # Agent and MCP workspace caches (Temporary)
 .system_generated/
 .agents/
+
+# Test artifacts
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+tests/Output/
+
+# Type checkers and linters
+.mypy_cache/
+.ruff_cache/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
+
+# Agent tooling (local, not versioned)
+.claude/
+CLAUDE.md
+.cora/
