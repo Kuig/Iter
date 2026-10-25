@@ -53,6 +53,7 @@ test_out.md
 *_preprocessed.md
 *_postprocessed.md
 *_processed.md
+*.iter-progress.jsonl
 
 # Agent and MCP workspace caches (Temporary)
 .system_generated/

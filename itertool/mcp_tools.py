@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from itertool.checkpoint import CheckpointMismatchError
 from itertool.processor import run_iter
 from itertool.models import Preset
 from itertool.config import AppConfig, resolve_config_path
@@ -85,6 +86,14 @@ def _build_preset(
     return preset
 
 
+def _mismatch_reply(exc: CheckpointMismatchError) -> str:
+    """Explain a progress-file mismatch and how to resolve it on the next call."""
+    return (
+        f"{exc} Call this tool again with on_mismatch='continue' to keep the saved "
+        f"results, or on_mismatch='restart' to discard them."
+    )
+
+
 def register_tools(mcp: FastMCP) -> None:
     """Register all Iter MCP tools with the given FastMCP instance.
 
@@ -103,6 +112,7 @@ def register_tools(mcp: FastMCP) -> None:
         compute_similarity: bool | None = None,
         config_file: str | None = None,
         preset_file: str | None = None,
+        on_mismatch: str | None = None,
     ) -> str:
         """Process a Markdown file node by node using Iter.
 
@@ -120,6 +130,9 @@ def register_tools(mcp: FastMCP) -> None:
                 implicitly resolved configuration may not be the intended one.
             preset_file: Optional absolute path to a preset JSON file. Supplies
                 the baseline settings; the arguments above override it.
+            on_mismatch: Only needed after this tool reported a progress file
+                from a different run: 'continue' keeps its saved results,
+                'restart' discards them.
 
         Returns:
             Processed text (if output_file is None) or a completion message.
@@ -140,10 +153,13 @@ def register_tools(mcp: FastMCP) -> None:
                 output_file=output_file,
                 preset=preset,
                 config=config,
+                on_mismatch=on_mismatch or "ask",
             )
             if output_file:
                 return f"Done: {input_file} processed to {output_file}."
             return result.postprocessed or result.results or result.preprocessed
+        except CheckpointMismatchError as exc:
+            return _mismatch_reply(exc)
         except Exception as exc:
             return f"Error: {exc}"
 
@@ -158,6 +174,7 @@ def register_tools(mcp: FastMCP) -> None:
         compute_similarity: bool | None = None,
         config_file: str | None = None,
         preset_file: str | None = None,
+        on_mismatch: str | None = None,
     ) -> str:
         """Process a Markdown text string node by node using Iter.
 
@@ -175,6 +192,9 @@ def register_tools(mcp: FastMCP) -> None:
                 implicitly resolved configuration may not be the intended one.
             preset_file: Optional absolute path to a preset JSON file. Supplies
                 the baseline settings; the arguments above override it.
+            on_mismatch: Only needed after this tool reported a progress file
+                from a different run: 'continue' keeps its saved results,
+                'restart' discards them.
 
         Returns:
             Processed text (if output_file is None) or a completion message.
@@ -195,9 +215,12 @@ def register_tools(mcp: FastMCP) -> None:
                 output_file=output_file,
                 preset=preset,
                 config=config,
+                on_mismatch=on_mismatch or "ask",
             )
             if output_file:
                 return f"Processed text saved to {output_file}."
             return result.postprocessed or result.results or result.preprocessed
+        except CheckpointMismatchError as exc:
+            return _mismatch_reply(exc)
         except Exception as exc:
             return f"Error processing text: {exc}"

@@ -14,6 +14,7 @@ from pathlib import Path
 from unified_ai_client import call_ai
 from unified_ai_client import get_embedding as _get_embedding_vec
 
+from itertool.checkpoint import Checkpoint, fingerprint, node_keys, progress_path
 from itertool.config import AppConfig
 from itertool.models import (
     Node,
@@ -58,9 +59,11 @@ class _RunState:
         similarity_enabled: Whether cosine similarity is still computed. Turned
             off after the first embedding failure, so a broken embedding server
             costs one retry cycle per run instead of two per node.
+        checkpoint: Progress file to restore from and record into, or None.
     """
 
     similarity_enabled: bool
+    checkpoint: Checkpoint | None = None
 
 
 def _format_duration(seconds: float) -> str:
@@ -172,6 +175,7 @@ def _run_preprocessing(
     document_text: str,
     preset: Preset,
     config: AppConfig,
+    checkpoint: Checkpoint | None = None,
 ) -> str:
     """Run Phase 1: a single AI call over the full document.
 
@@ -181,6 +185,7 @@ def _run_preprocessing(
         document_text: Full input document text.
         preset: Active preset.
         config: Application configuration.
+        checkpoint: Progress file to restore from and record into, or None.
 
     Returns:
         AI response string, or empty string if skipped.
@@ -190,9 +195,15 @@ def _run_preprocessing(
 
     logger.log_separator()
     logger.log_info("Phase 1: Preprocessing")
+    if checkpoint and checkpoint.preprocessed is not None:
+        logger.log_action("Preprocessing restored from the progress file.")
+        return checkpoint.preprocessed
+
     prompt = f"{preset.preprocessing_prompt}\n\n{document_text}"
     reply = _call_ai(prompt, config, preset)
     logger.log_success(f"Preprocessing complete ({_reply_stats(len(document_text), reply)}).")
+    if checkpoint:
+        checkpoint.record_preprocessed(reply.text, reply.elapsed)
     return reply.text
 
 
@@ -239,17 +250,20 @@ def _process_node(
     config: AppConfig,
     preprocessed_context: str,
     state: _RunState,
+    key: str = "",
 ) -> NodeResult:
     """Process a single node through the AI with optional similarity computation.
 
-    Applies heading/non-text handling rules before deciding whether to call AI.
+    Applies heading/non-text handling rules before deciding whether to call AI,
+    and restores the node from the progress file when it was done before.
 
     Args:
         node: The node to process.
         preset: Active preset (reads handling rules and options).
         config: Application configuration.
         preprocessed_context: Phase 1 result, used if include_preprocessed_context is True.
-        state: Run state shared across nodes (similarity on or off).
+        state: Run state shared across nodes (similarity, progress file).
+        key: The node's progress-file key, from checkpoint.node_keys().
 
     Returns:
         A NodeResult with the output and optional similarity score.
@@ -265,15 +279,15 @@ def _process_node(
         )
 
         if handling == "discard":
-            logger.log_action(f"  Node {node.index} [{node.node_type}] - discarded")
+            logger.log_action("  Discarded")
             return NodeResult(node=node, output="", was_processed=False)
 
         if handling == "report_unprocessed":
-            logger.log_action(f"  Node {node.index} [{node.node_type}] - passed through unchanged")
+            logger.log_action("  Passed through unchanged")
             return NodeResult(node=node, output=node.content, was_processed=False)
 
         if handling == "standalone_nodes":
-            logger.log_action(f"  Node {node.index} [{node.node_type}] - processing as standalone")
+            logger.log_action("  Processing as standalone")
             # Falls through to AI call below
 
         if handling == "merge_next":
@@ -281,7 +295,7 @@ def _process_node(
             # a following text node. What arrives here is the residue: a heading
             # at the end of the document, or one followed by another heading, a
             # table or a code block. There is nothing to merge with.
-            logger.log_action(f"  Node {node.index} [{node.node_type}] - merge_next (passed through)")
+            logger.log_action("  Nothing to merge with, passed through unchanged")
             return NodeResult(node=node, output=node.content, was_processed=False)
 
         # The pre-pass absorbed every non-text block that followed a text node.
@@ -290,8 +304,21 @@ def _process_node(
         # paragraph mode the pre-pass never runs and this handles every block,
         # which is why _run_node_processing warns about that combination.
         if handling == "part_of_section":
-            logger.log_action(f"  Node {node.index} [{node.node_type}] - included in section (passed through)")
+            logger.log_action("  No section to join, passed through unchanged")
             return NodeResult(node=node, output=node.content, was_processed=False)
+
+    saved = state.checkpoint.nodes.get(key) if state.checkpoint else None
+    if saved is not None:
+        logger.log_action("  Restored from the progress file")
+        return NodeResult(
+            node=node,
+            output=saved["output"],
+            similarity=saved["similarity"],
+            was_processed=True,
+            input_chars=saved["input_chars"],
+            output_chars=saved["output_chars"],
+            elapsed=saved["elapsed"],
+        )
 
     # --- AI call ---
     prompt = f"{preset.node_prompt}\n\n{node.content}"
@@ -303,13 +330,13 @@ def _process_node(
         ]
 
     reply = _call_ai(prompt, config, preset, messages=messages)
-    logger.log_ai(f"  Node {node.index} - AI responded ({_reply_stats(len(node.content), reply)})")
+    logger.log_ai(f"  AI responded ({_reply_stats(len(node.content), reply)})")
 
     similarity = _compute_similarity(node.content, reply.text, config, state)
     if similarity is not None:
         logger.log_metric(f"  Similarity: {similarity:.3f} {get_similarity_indicator(similarity)}")
 
-    return NodeResult(
+    result = NodeResult(
         node=node,
         output=reply.text,
         similarity=similarity,
@@ -318,6 +345,9 @@ def _process_node(
         output_chars=len(reply.text),
         elapsed=reply.elapsed,
     )
+    if state.checkpoint:
+        state.checkpoint.record_node(key, result)
+    return result
 
 
 def _run_node_processing(
@@ -325,6 +355,7 @@ def _run_node_processing(
     preset: Preset,
     config: AppConfig,
     preprocessed: str,
+    checkpoint: Checkpoint | None = None,
 ) -> tuple[list[NodeResult], str]:
     """Run Phase 2: apply node_prompt to each node independently.
 
@@ -339,6 +370,7 @@ def _run_node_processing(
         preset: Active preset.
         config: Application configuration.
         preprocessed: Phase 1 result (may be empty).
+        checkpoint: Progress file to restore from and record into, or None.
 
     Returns:
         Tuple of (list of NodeResult, assembled results string).
@@ -356,7 +388,6 @@ def _run_node_processing(
         )
 
     nodes = _resolve_nodes(document_text, preset)
-    logger.log_action(f"Found {len(nodes)} nodes. Processing...")
 
     node_results: list[NodeResult] = []
     output_parts: list[str] = []
@@ -411,10 +442,13 @@ def _run_node_processing(
             j += 1
         merged_nodes = assembled
 
-    state = _RunState(similarity_enabled=preset.compute_similarity)
-    for node in merged_nodes:
-        logger.log_action(f"Node {node.index}/{len(merged_nodes)} [{node.node_type}]")
-        result = _process_node(node, preset, config, preprocessed, state)
+    # Counted after both pre-passes: what they merged is one node, not two.
+    total = len(merged_nodes)
+    logger.log_action(f"Found {total} nodes. Processing...")
+    state = _RunState(similarity_enabled=preset.compute_similarity, checkpoint=checkpoint)
+    for position, (node, key) in enumerate(zip(merged_nodes, node_keys(merged_nodes)), 1):
+        logger.log_action(f"Node {position}/{total} (§{node.index}) [{node.node_type}]")
+        result = _process_node(node, preset, config, preprocessed, state, key)
         node_results.append(result)
 
         if result.output:
@@ -455,6 +489,7 @@ def _run_postprocessing(
     results: str,
     preset: Preset,
     config: AppConfig,
+    checkpoint: Checkpoint | None = None,
 ) -> str:
     """Run Phase 3: a single AI call to consolidate all results.
 
@@ -469,6 +504,7 @@ def _run_postprocessing(
         results: Phase 2 assembled output.
         preset: Active preset.
         config: Application configuration.
+        checkpoint: Progress file to restore from and record into, or None.
 
     Returns:
         AI response string, or empty string if skipped.
@@ -478,6 +514,9 @@ def _run_postprocessing(
 
     logger.log_separator()
     logger.log_info("Phase 3: Postprocessing")
+    if checkpoint and checkpoint.postprocessed is not None:
+        logger.log_action("Postprocessing restored from the progress file.")
+        return checkpoint.postprocessed
 
     attachments = [
         (title, text)
@@ -495,6 +534,8 @@ def _run_postprocessing(
     reply = _call_ai(prompt, config, preset)
     attached_chars = sum(len(text) for _, text in attachments)
     logger.log_success(f"Postprocessing complete ({_reply_stats(attached_chars, reply)}).")
+    if checkpoint:
+        checkpoint.record_postprocessed(reply.text, reply.elapsed)
     return reply.text
 
 
@@ -538,6 +579,7 @@ def run_iter(
     output_file: str | None = None,
     preset: Preset | None = None,
     config: AppConfig | None = None,
+    on_mismatch: str = "ask",
 ) -> ProcessingResult:
     """Run the full Iter processing pipeline on a document.
 
@@ -548,18 +590,29 @@ def run_iter(
     Optionally saves the main output, preprocessed, and postprocessed results
     to disk according to the preset's output settings.
 
+    Every completed AI call is saved to a progress file, so a run that stops
+    early resumes where it left off when started again. The file is deleted
+    once all outputs are written; see checkpoint.progress_path() for where it lives.
+
     Args:
         input_file: Path to the input Markdown file. Used if input_text is None.
         input_text: Raw Markdown text to process (bypasses file reading).
         output_file: Path where the main output will be saved. Optional.
         preset: Active Preset configuration. Defaults to a bare Preset().
         config: Application configuration. Defaults to AppConfig.load().
+        on_mismatch: What to do with a progress file written for a different
+            input, preset or model: 'ask' raises CheckpointMismatchError so the
+            caller can ask the user, 'continue' keeps the saved results,
+            'restart' discards them.
 
     Returns:
         A ProcessingResult with all intermediate and final results.
 
     Raises:
-        ValueError: If neither input_text nor a valid input_file is provided.
+        ValueError: If neither input_text nor a valid input_file is provided,
+            or on_mismatch is not a known policy.
+        CheckpointMismatchError: If on_mismatch is 'ask' and the progress file
+            belongs to a different run.
     """
     start = time.perf_counter()
     if config is None:
@@ -586,17 +639,61 @@ def run_iter(
     logger.log_info(f"Iter - provider: {config.provider} | model: {config.model_name}")
     logger.log_info(f"Node mode: {preset.node_mode}")
 
+    checkpoint = Checkpoint(
+        progress_path(output_file, input_file, input_text),
+        fingerprint(document_text, preset, config),
+        on_mismatch,
+    )
+    if checkpoint.resumed:
+        logger.log_info(f"Resuming from {checkpoint.path}: {checkpoint.summary()}")
+
+    try:
+        proc_result = _run_phases(document_text, output_file, preset, config, checkpoint)
+    except BaseException:
+        logger.log_warning(f"Progress saved to {checkpoint.path}; run again to resume.")
+        raise
+    checkpoint.delete()
+
+    logger.log_separator()
+    logger.log_success(f"Iter processing complete in {_format_duration(time.perf_counter() - start)}.")
+    return proc_result
+
+
+def _run_phases(
+    document_text: str,
+    output_file: str | None,
+    preset: Preset,
+    config: AppConfig,
+    checkpoint: Checkpoint,
+) -> ProcessingResult:
+    """Run the three phases and write the outputs; the body of run_iter().
+
+    Args:
+        document_text: The loaded input document.
+        output_file: Path where the main output will be saved, or None.
+        preset: Active preset.
+        config: Application configuration.
+        checkpoint: The run's progress file.
+
+    Returns:
+        A ProcessingResult with all intermediate and final results.
+    """
     # --- Phase 1: Preprocessing ---
-    preprocessed = _run_preprocessing(document_text, preset, config)
+    preprocessed = _run_preprocessing(document_text, preset, config, checkpoint)
 
     # --- Phase 2: Node Processing ---
+    nodes_saved_before = len(checkpoint.nodes)
     node_results, results = _run_node_processing(
-        document_text, preset, config, preprocessed
+        document_text, preset, config, preprocessed, checkpoint
     )
+    if len(checkpoint.nodes) != nodes_saved_before:
+        # Phase 3 consolidates the node results: once any node was redone, a
+        # saved Phase 3 result no longer matches them.
+        checkpoint.postprocessed = None
 
     # --- Phase 3: Postprocessing ---
     postprocessed = _run_postprocessing(
-        document_text, preprocessed, results, preset, config
+        document_text, preprocessed, results, preset, config, checkpoint
     )
 
     # --- Build result object ---
@@ -626,6 +723,4 @@ def run_iter(
         post_path.write_text(postprocessed, encoding="utf-8")
         logger.log_save(f"Postprocessed output saved to: {post_path}")
 
-    logger.log_separator()
-    logger.log_success(f"Iter processing complete in {_format_duration(time.perf_counter() - start)}.")
     return proc_result

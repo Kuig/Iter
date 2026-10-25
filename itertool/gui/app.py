@@ -13,6 +13,7 @@ import streamlit as st
 from unified_ai_client import silence_sdks
 
 import itertool.logger as logger
+from itertool.checkpoint import CheckpointMismatchError
 from itertool.config import KEEP_ALIVE_FOREVER, AppConfig
 from itertool.models import Preset
 from itertool.processor import run_iter
@@ -598,11 +599,33 @@ st.divider()
 
 # ── Run Button ────────────────────────────────────────────────────────────────
 
+@st.dialog("Saved progress found")
+def _ask_mismatch_policy(message: str) -> None:
+    """Let the user choose what to do with a progress file from a different run."""
+    st.write(message)
+    col_continue, col_restart = st.columns(2)
+    # Callbacks rather than return values: they record the choice before any
+    # rerun, whether Streamlit reruns just this dialog or the whole page.
+    col_continue.button(
+        "Continue", help="Keep the saved results, redo only what is missing.",
+        use_container_width=True, on_click=st.session_state.update, kwargs={"resume_policy": "continue"},
+    )
+    col_restart.button(
+        "Restart", help="Discard the saved results and start from scratch.",
+        use_container_width=True, on_click=st.session_state.update, kwargs={"resume_policy": "restart"},
+    )
+    if st.session_state.get("resume_policy"):
+        st.rerun()
+
+
 run_col, _ = st.columns([1, 4])
 with run_col:
     run_btn = st.button("▶ Run", type="primary", use_container_width=True, key="btn_run")
 
-if run_btn:
+# Set by the dialog: the run that raised the mismatch is started again with it.
+resume_policy = st.session_state.pop("resume_policy", None)
+
+if run_btn or resume_policy:
     if not input_path:
         st.error("Please provide an input file path.")
     elif not st.session_state.node_prompt.strip() and not st.session_state.preprocessing_prompt.strip():
@@ -610,6 +633,7 @@ if run_btn:
     else:
         preset = _state_to_preset()
         config = _state_to_config()
+        mismatch: CheckpointMismatchError | None = None
 
         with st.spinner("Processing..."):
             try:
@@ -621,14 +645,20 @@ if run_btn:
                     output_file=output_path or None,
                     preset=preset,
                     config=config,
+                    on_mismatch=resume_policy or "ask",
                 )
                 st.session_state.result_preprocessed = result.preprocessed
                 st.session_state.result_processed = result.results
                 st.session_state.result_postprocessed = result.postprocessed
                 st.session_state.result_node_results = result.node_results
                 st.success("✅ Processing complete!")
+            except CheckpointMismatchError as exc:
+                mismatch = exc
             except Exception as exc:
                 st.error(f"❌ Error: {exc}")
+
+        if mismatch:
+            _ask_mismatch_policy(str(mismatch))
 
 # ── Results ───────────────────────────────────────────────────────────────────
 

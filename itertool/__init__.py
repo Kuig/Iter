@@ -14,8 +14,9 @@ if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
         sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True
     )
 
+from itertool.checkpoint import CheckpointMismatchError
 from itertool.config import AppConfig
 from itertool.models import Preset, ProcessingResult
 from itertool.processor import run_iter
 
-__all__ = ["AppConfig", "Preset", "ProcessingResult", "run_iter"]
+__all__ = ["AppConfig", "CheckpointMismatchError", "Preset", "ProcessingResult", "run_iter"]

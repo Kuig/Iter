@@ -190,6 +190,39 @@ class TestPostprocessingPrompt(unittest.TestCase):
         self.assertEqual(ai.prompts[0], "Review.\n\n\n=== NODE RESULTS ===\nRES")
 
 
+class TestProgressCounter(unittest.TestCase):
+    """The counter runs over the nodes actually sent, after both pre-passes."""
+
+    def _counter_lines(self, doc: str, **preset_fields) -> list[str]:
+        preset = Preset(node_prompt="p", **preset_fields)
+        with _StubAi(), _CaptureLog("log_action") as actions:
+            processor._run_node_processing(doc, preset, AppConfig(), "")
+        return [m for m in actions.messages if m.startswith("Node ")]
+
+    def test_merged_heading_counts_once(self):
+        lines = self._counter_lines(
+            "# Title\n\nText.\n\nMore text.\n", node_mode="paragraph", heading_handling="merge_next"
+        )
+        self.assertEqual(lines, ["Node 1/2 (§1) [text]", "Node 2/2 (§3) [text]"])
+
+    def test_absorbed_non_text_block_counts_once(self):
+        lines = self._counter_lines(
+            "Text.\n\n| a |\n| - |\n\n# Next\n\nMore text.\n",
+            node_mode="section", non_text_handling="part_of_section",
+        )
+        self.assertEqual([line.split(" (")[0] for line in lines], ["Node 1/3", "Node 2/3", "Node 3/3"])
+
+    def test_discarded_nodes_are_still_counted(self):
+        lines = self._counter_lines("# Title\n\nText.\n", heading_handling="discard")
+        self.assertEqual(lines, ["Node 1/2 (§1) [heading]", "Node 2/2 (§2) [text]"])
+
+    def test_found_count_matches_the_counter(self):
+        preset = Preset(node_prompt="p", heading_handling="merge_next")
+        with _StubAi(), _CaptureLog("log_action") as actions:
+            processor._run_node_processing("# Title\n\nText.\n", preset, AppConfig(), "")
+        self.assertIn("Found 1 nodes. Processing...", actions.messages)
+
+
 class TestBuildSeparator(unittest.TestCase):
     """The separator is part of the output contract, so its shape is pinned."""
 

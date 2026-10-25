@@ -39,6 +39,7 @@ Iter/
 ├── itertool/                  # Python package (installable)
 │   ├── __init__.py            # UTF-8 fix + re-exports run_iter
 │   ├── __main__.py            # CLI entry point  →  iter run / mcp / gui
+│   ├── checkpoint.py          # Progress file that makes runs resumable
 │   ├── config.py              # AppConfig dataclass  (config.json loader)
 │   ├── logger.py              # Dual-backend logger (console + Streamlit)
 │   ├── markdown_utils.py      # Markdown parsing and block classification
@@ -259,6 +260,28 @@ messages = [
 
 This injects the preprocessed result as a prior conversation turn so the model
 has document-level context without repeating it verbatim in every node prompt.
+
+#### Resumable runs (`checkpoint.py`)
+
+`run_iter()` opens a `Checkpoint` before Phase 1 and deletes it after the outputs are written.
+The progress file is JSON Lines: a header holding the run's fingerprint, then one record per
+completed AI call (`pre`, `node`, `post`), appended and flushed to disk as soon as the call
+returns. Pass-through nodes are not recorded: they cost nothing to recompute.
+
+- **Fingerprint.** Hashes of the input and of the preset, plus the generation-relevant model
+  settings. Preset fields that only shape the output file are excluded, so changing them
+  never invalidates saved work.
+- **Node keys.** A node is keyed by the hash of its content (after the pre-passes) and its
+  occurrence number, not by its index. When the user continues after editing the input, the
+  unchanged nodes are still found and only the edited ones are redone.
+- **Mismatch.** `on_mismatch="ask"` raises `CheckpointMismatchError` before any AI call; each
+  interface catches it, asks the user, and calls `run_iter()` again with `"continue"` or
+  `"restart"`. Both rewrite the header, so the next run does not ask again.
+- **Phase 3 is redone when any node was.** It consolidates the node results, so a saved Phase 3
+  result is dropped as soon as Phase 2 made a new call.
+- **Damage.** A truncated last line, the trace of a hard kill, is skipped; the file is then
+  rewritten before anything is appended, since a record added after a partial line would be
+  lost with it.
 
 ---
 

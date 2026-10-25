@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Runs are resumable.** Every completed AI call is saved at once to a progress file
+  (`<output>.iter-progress.jsonl`, or a file in the working directory when there is no
+  output), so a run that stops early resumes where it left off. The file is deleted when the
+  run completes. If the input, the preset or the model settings changed in between, Iter asks
+  whether to continue, redoing only the nodes whose content changed, or to restart. The CLI
+  asks in the console, the GUI in a dialog. The MCP tools take a new `on_mismatch` parameter,
+  and `run_iter()` takes the same one. `CheckpointMismatchError` is exported from the package.
 - Every AI call logs how long it took, retries included, and the token counts when the
   provider reports them. Phase 2 ends with the total and the average time per node, and the
   run ends with its overall duration.
@@ -26,11 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The model warm-up runs for every provider and no longer stops the GUI or the CLI when it
   fails: it logs a warning, and the first AI call reports the error.
 - UnifiedAiClient is pinned to v0.8.0.
+- The per-node log lines no longer repeat the node number, which the progress line above
+  them already shows, together with the node's `§` index.
+- Ctrl+C in `iter run` ends with a short "Interrupted." message instead of a traceback.
 
 ### Fixed
 
 - Setting the context size back to 0 in the GUI now restores the model default. The earlier
   value used to stay in effect until the process restarted.
+- The Phase 2 progress counter counts the nodes actually sent, after headings are merged and
+  non-text blocks absorbed into sections. It used to show the original block index over the
+  merged total, for example `Node 3/2`.
 - An unreachable embedding server no longer stalls every node. The first failure is
   reported once and turns cosine similarity off for the rest of the run; previously each
   node waited through the retries twice.

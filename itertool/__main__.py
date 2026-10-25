@@ -7,10 +7,37 @@ import sys
 from pathlib import Path
 
 from unified_ai_client import silence_sdks
+from itertool.checkpoint import CheckpointMismatchError
 from itertool.processor import run_iter
 from itertool.models import Preset
 from itertool.config import AppConfig
 import itertool.logger as logger
+
+
+_CHOICES = {"c": "continue", "r": "restart"}
+
+
+def _ask_mismatch_policy(exc: CheckpointMismatchError) -> str:
+    """Ask the user what to do with a progress file from a different run.
+
+    Args:
+        exc: The mismatch, whose message names what changed.
+
+    Returns:
+        'continue' or 'restart'.
+
+    Raises:
+        CheckpointMismatchError: If there is no one to ask (stdin closed).
+    """
+    logger.log_warning(str(exc))
+    while True:
+        try:
+            answer = input("Continue with the saved results, or restart from scratch? [c/r]: ")
+        except EOFError:
+            raise exc from None
+        policy = _CHOICES.get(answer.strip().lower()[:1])
+        if policy:
+            return policy
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -39,12 +66,14 @@ def cmd_run(args: argparse.Namespace) -> None:
         if args.postprocessing_prompt:
             preset.postprocessing_prompt = args.postprocessing_prompt
 
-        run_iter(
-            input_file=args.input,
-            output_file=args.output,
-            preset=preset,
-            config=config,
-        )
+        run_kwargs = dict(input_file=args.input, output_file=args.output, preset=preset, config=config)
+        try:
+            run_iter(**run_kwargs)
+        except CheckpointMismatchError as exc:
+            run_iter(**run_kwargs, on_mismatch=_ask_mismatch_policy(exc))
+    except KeyboardInterrupt:
+        logger.log_warning("Interrupted.")
+        sys.exit(130)
     except Exception as exc:
         logger.log_error(f"Fatal error: {exc}")
         sys.exit(1)

@@ -71,6 +71,7 @@ run_iter(
     output_file: str | None = None,
     preset: Preset | None = None,
     config: AppConfig | None = None,
+    on_mismatch: str = "ask",
 ) -> ProcessingResult
 ```
 
@@ -81,9 +82,29 @@ run_iter(
 | `output_file` | Where to write the composed result. Omit to only receive it in the return value. |
 | `preset` | The task: prompts, node mode, handling rules, output composition. Defaults to `Preset()`. |
 | `config` | Model and provider settings. Defaults to `AppConfig.load()`. |
+| `on_mismatch` | What to do with a progress file from a different run: `"ask"`, `"continue"` or `"restart"`. See [Resuming an interrupted run](#resuming-an-interrupted-run). |
 
 Returns a `ProcessingResult` with `preprocessed`, `node_results`, `results` and `postprocessed`.
-Raises `ValueError` if neither `input_text` nor an existing `input_file` is given.
+Raises `ValueError` if neither `input_text` nor an existing `input_file` is given, and
+`CheckpointMismatchError` (exported from `itertool`) when `on_mismatch` is `"ask"` and a
+progress file from a different run is found.
+
+### Resuming an interrupted run
+
+Every completed AI call is saved at once to a progress file, so a run that stops early (a
+crash, a timeout, Ctrl+C) picks up where it left off when started again with the same input
+and output. The file is deleted when the run completes.
+
+- With an output file, it is `<output file>.iter-progress.jsonl`, next to the output.
+- Without one, it goes in the working directory, named after the input:
+  `<input name>-<hash>.iter-progress.jsonl`, or `text-<hash>.iter-progress.jsonl` for text input.
+
+If the input document, the preset or the model settings changed since the file was written,
+Iter asks whether to **continue**, keeping the saved results and redoing only the nodes whose
+content changed, or **restart** from scratch. The CLI asks in the console, the GUI in a
+dialog. The MCP tools reply with an explanation and take `on_mismatch="continue"` or
+`"restart"` on the next call. Output-only preset settings (which phases go in the output
+file, separators, interlacing) do not count as a change.
 
 ### Windows Context Menu Integration
 
