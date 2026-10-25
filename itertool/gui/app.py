@@ -10,7 +10,7 @@ sys.path.insert(0, str(_PKG_ROOT))
 
 import streamlit as st
 
-from unified_ai_client import silence_sdks
+from unified_ai_client import list_models, list_providers, silence_sdks
 
 import itertool.logger as logger
 from itertool.checkpoint import CheckpointMismatchError
@@ -35,11 +35,6 @@ st.set_page_config(
 # consistent with the CLI and support non-editable production installs.
 _PRESETS_DIR = Path.cwd() / "Presets"
 _PRESETS_DIR.mkdir(exist_ok=True)
-
-_PROVIDERS = [
-    "ollama", "google", "anthropic", "openai",
-    "mistral", "cohere", "groq", "xai", "lmstudio", "llamacpp",
-]
 
 _DEFAULT_TEMPERATURE = 0.7
 
@@ -87,9 +82,8 @@ def _file_picker(label: str, key: str, save: bool = False) -> str:
             root = tk.Tk()
             root.withdraw()
             root.wm_attributes("-topmost", 1)
-            init_dir = str(Path(st.session_state.get(key, "")).parent) or str(Path.cwd())
-            if not Path(init_dir).is_absolute():
-                init_dir = str(Path.cwd() / init_dir)
+            # An absolute path replaces the working directory; a relative one joins it.
+            init_dir = str(Path.cwd() / Path(st.session_state.get(key, "")).parent)
             if save:
                 selected = filedialog.asksaveasfilename(
                     initialdir=init_dir,
@@ -109,6 +103,92 @@ def _file_picker(label: str, key: str, save: bool = False) -> str:
                     st.session_state[key] = Path(selected).as_posix()
                 st.rerun()
     return st.session_state.get(key, "")
+
+
+@st.cache_data(show_spinner=False)
+def _available_providers(embeddings: bool) -> list[str]:
+    """Names of the providers that can be used now: local servers that answer,
+    cloud providers with a key.
+
+    Args:
+        embeddings: If True, only the providers that support embeddings.
+    """
+    return [p.name for p in list_providers() if p.supports_embeddings or not embeddings]
+
+
+@st.cache_data(show_spinner=False)
+def _available_models(provider: str, embeddings: bool) -> tuple[list[str], str]:
+    """Model ids offered by a provider, and the error if they could not be listed.
+
+    Args:
+        provider: Provider name.
+        embeddings: If True, leave out the models known not to embed. A model
+            whose capability is unknown is kept.
+
+    Returns:
+        (model ids, '') on success, ([], error message) on failure.
+    """
+    try:
+        models = list_models(provider)
+    except Exception as exc:
+        return [], str(exc) or type(exc).__name__
+    return [m.id for m in models if m.embeddings is not False or not embeddings], ""
+
+
+def _provider_picker(label: str, key: str, model_key: str, embeddings: bool) -> None:
+    """Render a provider selectbox bound to st.session_state[key].
+
+    A saved provider that is not available right now stays selectable, with a
+    warning, so the menu never changes the saved value silently.
+
+    Args:
+        label: Widget label.
+        key: Session state key of the provider.
+        model_key: Session state key of the paired model, cleared on change so
+            the model menu falls back to the new provider's first model.
+        embeddings: If True, offer only the providers that support embeddings.
+    """
+    options = _available_providers(embeddings)
+    current = st.session_state.get(key, "")
+    if current and current not in options:
+        options = [current, *options]
+        st.caption(f"⚠️ '{current}' is not available now: server not running or no API key.")
+    st.selectbox(
+        label,
+        options=options,
+        key=key,
+        on_change=st.session_state.update,
+        kwargs={model_key: ""},
+    )
+
+
+def _model_picker(label: str, key: str, provider: str, embeddings: bool) -> None:
+    """Render a model selectbox bound to st.session_state[key].
+
+    Falls back to a text input when the provider cannot list its models (server
+    down, script provider), so a model can always be entered.
+
+    Args:
+        label: Widget label.
+        key: Session state key of the model.
+        provider: Provider whose models are offered.
+        embeddings: If True, offer only the models that can embed.
+    """
+    models, error = _available_models(provider, embeddings)
+    if not models:
+        st.text_input(label, key=key)
+        reason = error.rstrip(".") or "the provider offers none"
+        st.caption(f"⚠️ Models of '{provider}' could not be listed ({reason}). Type the model name.")
+        return
+
+    current = st.session_state.get(key, "")
+    options = models
+    if not current:
+        st.session_state[key] = models[0]
+    elif current not in models:
+        options = [current, *models]
+        st.caption(f"⚠️ '{current}' is not offered by '{provider}' now.")
+    st.selectbox(label, options=options, key=key)
 
 
 def _init_state() -> None:
@@ -291,25 +371,15 @@ with st.sidebar:
     # ── Model Settings ────────────────────────────────────────────────────────
     st.header("⚙️ Model Settings")
 
-    st.text_input(
-        "Provider",
-        key="provider",
-    )
+    _provider_picker("Provider", "provider", "model_name", embeddings=False)
+    _model_picker("Model", "model_name", st.session_state.provider, embeddings=False)
+    _provider_picker("Embedding provider", "embedding_provider", "embedding_model", embeddings=True)
+    _model_picker("Embedding model", "embedding_model", st.session_state.embedding_provider, embeddings=True)
 
-    st.text_input(
-        "Model",
-        key="model_name",
-    )
-
-    st.text_input(
-        "Embedding provider",
-        key="embedding_provider",
-    )
-
-    st.text_input(
-        "Embedding model",
-        key="embedding_model",
-    )
+    if st.button("🔄 Refresh providers and models", use_container_width=True, key="btn_refresh_models"):
+        _available_providers.clear()
+        _available_models.clear()
+        st.rerun()
 
     st.toggle(
         "Force temperature",

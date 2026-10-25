@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The GUI offers the available providers and models as menus**, listed by UnifiedAiClient:
+  local servers that answer and cloud providers with a key. The embedding menus show only
+  what can embed. A saved value that is not available stays selected, with a warning. A
+  provider that cannot list its models falls back to a text field, and a refresh button
+  reloads the lists.
 - **Runs are resumable.** Every completed AI call is saved at once to a progress file
   (`<output>.iter-progress.jsonl`, or a file in the working directory when there is no
   output), so a run that stops early resumes where it left off. The file is deleted when the

@@ -50,7 +50,12 @@ Ollama is always reached at the UnifiedAiClient default address, `http://localho
 
 ## Saving from the GUI
 
-The sidebar exposes every one of these fields. **Save as default** writes them to
+The sidebar exposes every one of these fields. The provider and model fields are menus
+filled from what is available now: local servers that answer and cloud providers with a key
+in `secrets.json`. The embedding menus offer only the providers and models able to embed. A
+saved value that is not available stays selected, with a warning. When a provider cannot
+list its models, the model becomes a text field. **Refresh providers and models** reloads
+the lists, for example after starting Ollama. **Save as default** writes them to
 `./config.json` in the workspace folder, and reports the path it wrote. Loading falls back
 to the package root, but saving never writes inside an installed package.
 

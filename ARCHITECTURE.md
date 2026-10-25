@@ -350,12 +350,16 @@ call may write there. Library callers that handle their own output can select
 │  SIDEBAR           │  MAIN AREA                                   │
 │                    │                                              │
 │  ⚙️ Model Settings  │  📄 Files                                    │
-│    Provider        │    Input file  [path input] [📁]             │
-│    Model           │    Output file [path input] [💾]             │
-│    Embedding model │                                              │
-│    Temperature     │  ▸ Phase 1 - Preprocessing (expander)        │
-│    Keep alive      │    [text area for preprocessing_prompt]      │
+│    Provider    [▾] │    Input file  [path input] [📁]             │
+│    Model       [▾] │    Output file [path input] [💾]             │
+│    Embedding   [▾] │                                              │
+│     provider/model │  ▸ Phase 1 - Preprocessing (expander)        │
+│    [🔄 Refresh]    │    [text area for preprocessing_prompt]      │
+│    Temperature     │                                              │
 │    Thinking [✓]   │                                              │
+│    Timeout,        │                                              │
+│    context size,   │                                              │
+│    keep alive      │                                              │
 │                    │  ▸ Phase 2 - Node Processing (expander)      │
 │  📂 Presets        │    [text area for node_prompt]               │
 │    System prompt   │    node mode: ◉ Paragraph  ○ Section         │
