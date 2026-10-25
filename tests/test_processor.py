@@ -27,8 +27,9 @@ def tearDownModule():
 class _StubAi:
     """Replaces _call_ai for the duration of a test and records its prompts."""
 
-    def __init__(self):
+    def __init__(self, elapsed: float = 0.0):
         self.prompts: list[str] = []
+        self.elapsed = elapsed
         self._original = None
 
     def __enter__(self):
@@ -36,7 +37,7 @@ class _StubAi:
 
         def fake(prompt, config, preset, messages=None):
             self.prompts.append(prompt)
-            return "[AI]"
+            return processor._AiReply(text="[AI]", elapsed=self.elapsed)
 
         processor._call_ai = fake
         return self
@@ -59,6 +60,134 @@ class _CaptureWarnings:
 
     def __exit__(self, *exc):
         processor.logger.log_warning = self._original
+
+
+class _StubEmbedding:
+    """Replaces _get_embedding; fails on every call when failing is True."""
+
+    def __init__(self, failing: bool):
+        self.failing = failing
+        self.calls = 0
+        self._original = None
+
+    def __enter__(self):
+        self._original = processor._get_embedding
+
+        def fake(text, config):
+            self.calls += 1
+            if self.failing:
+                raise ConnectionError("embedding server down")
+            return [1.0, 0.0]
+
+        processor._get_embedding = fake
+        return self
+
+    def __exit__(self, *exc):
+        processor._get_embedding = self._original
+
+
+class _CaptureLog:
+    """Collects the messages of one logger function used by the processor."""
+
+    def __init__(self, name: str):
+        self.name = name
+        self.messages: list[str] = []
+        self._original = None
+
+    def __enter__(self):
+        self._original = getattr(processor.logger, self.name)
+        setattr(processor.logger, self.name, self.messages.append)
+        return self
+
+    def __exit__(self, *exc):
+        setattr(processor.logger, self.name, self._original)
+
+
+class TestFormatDuration(unittest.TestCase):
+    """Durations read as seconds below a minute, minutes and seconds above."""
+
+    def test_below_a_minute(self):
+        self.assertEqual(processor._format_duration(12.34), "12.3 s")
+
+    def test_above_a_minute(self):
+        self.assertEqual(processor._format_duration(245), "4 min 05 s")
+
+
+class TestCallTiming(unittest.TestCase):
+    """Every AI call reports how long it took."""
+
+    DOC = "First paragraph.\n\nSecond paragraph.\n"
+
+    def test_node_log_line_carries_the_duration(self):
+        preset = Preset(node_prompt="p")
+        with _StubAi(elapsed=14.2), _CaptureLog("log_ai") as ai_log:
+            results, _ = processor._run_node_processing(self.DOC, preset, AppConfig(), "")
+        self.assertEqual(len(ai_log.messages), 2)
+        self.assertIn("14.2 s", ai_log.messages[0])
+        self.assertEqual(results[0].elapsed, 14.2)
+
+    def test_phase_two_summary_carries_total_and_average(self):
+        preset = Preset(node_prompt="p")
+        with _StubAi(elapsed=30.0), _CaptureLog("log_success") as success:
+            processor._run_node_processing(self.DOC, preset, AppConfig(), "")
+        self.assertIn("AI time: 1 min 00 s (avg 30.0 s per node)", success.messages[-1])
+
+    def test_tokens_are_shown_only_when_reported(self):
+        without = processor._reply_stats(10, processor._AiReply("abc", 1.0))
+        with_tokens = processor._reply_stats(10, processor._AiReply("abc", 1.0, 7, 3))
+        self.assertNotIn("tokens", without)
+        self.assertIn("tokens in/out: 7/3", with_tokens)
+
+
+class TestSimilarity(unittest.TestCase):
+    """A failing embedding server is reported once, not once per node."""
+
+    DOC = "One.\n\nTwo.\n\nThree.\n"
+
+    def _run(self, failing: bool):
+        preset = Preset(node_prompt="p", compute_similarity=True)
+        with _StubAi(), _StubEmbedding(failing) as embedding, _CaptureWarnings() as warnings:
+            results, _ = processor._run_node_processing(self.DOC, preset, AppConfig(), "")
+        return results, embedding.calls, warnings.messages
+
+    def test_first_failure_disables_similarity_for_the_run(self):
+        results, calls, warnings = self._run(failing=True)
+        self.assertEqual(calls, 1)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("disabled", warnings[0])
+        self.assertTrue(all(r.similarity is None for r in results))
+
+    def test_working_embeddings_give_a_score_per_node(self):
+        results, calls, warnings = self._run(failing=False)
+        self.assertEqual(calls, 6)
+        self.assertEqual(warnings, [])
+        self.assertTrue(all(r.similarity == 1.0 for r in results))
+
+
+class TestPostprocessingPrompt(unittest.TestCase):
+    """The composed Phase 3 prompt is documented, so its shape is pinned."""
+
+    def test_attachments_follow_the_prompt_in_order(self):
+        preset = Preset(
+            postprocessing_prompt="Review.",
+            postprocess_attach_input=True,
+            postprocess_attach_preprocessed=True,
+            postprocess_attach_results=True,
+        )
+        with _StubAi() as ai:
+            processor._run_postprocessing("DOC", "PRE", "RES", preset, AppConfig())
+        self.assertEqual(
+            ai.prompts[0],
+            "Review.\n\n\n=== ORIGINAL DOCUMENT ===\nDOC"
+            "\n\n\n=== PREPROCESSED ===\nPRE"
+            "\n\n\n=== NODE RESULTS ===\nRES",
+        )
+
+    def test_empty_attachments_are_left_out(self):
+        preset = Preset(postprocessing_prompt="Review.", postprocess_attach_input=True)
+        with _StubAi() as ai:
+            processor._run_postprocessing("", "PRE", "RES", preset, AppConfig())
+        self.assertEqual(ai.prompts[0], "Review.\n\n\n=== NODE RESULTS ===\nRES")
 
 
 class TestBuildSeparator(unittest.TestCase):

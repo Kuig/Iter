@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Every AI call logs how long it took, retries included, and the token counts when the
+  provider reports them. Phase 2 ends with the total and the average time per node, and the
+  run ends with its overall duration.
 - `keep_alive_minutes` (default 20) sets how long Ollama keeps the model loaded once idle;
   `-1` keeps it loaded forever, `0` unloads it after each request.
 
@@ -28,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Setting the context size back to 0 in the GUI now restores the model default. The earlier
   value used to stay in effect until the process restarted.
+- An unreachable embedding server no longer stalls every node. The first failure is
+  reported once and turns cosine similarity off for the rest of the run; previously each
+  node waited through the retries twice.
 
 ## [0.1.2] - 2026-08-30
 

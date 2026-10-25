@@ -152,6 +152,7 @@ class NodeResult:
         was_processed: Whether the node was sent to the AI (False means it was passed through).
         input_chars: Number of input characters sent to the AI (0 if skipped).
         output_chars: Number of output characters received from the AI (0 if skipped).
+        elapsed: Seconds the AI call took, retries included (0.0 if skipped).
     """
 
     node: Node
@@ -160,6 +161,7 @@ class NodeResult:
     was_processed: bool = True
     input_chars: int = 0
     output_chars: int = 0
+    elapsed: float = 0.0
 
 
 @dataclass

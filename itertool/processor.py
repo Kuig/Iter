@@ -7,6 +7,8 @@ Implements the three-phase pipeline:
 """
 from __future__ import annotations
 
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from unified_ai_client import call_ai
@@ -31,14 +33,60 @@ import itertool.logger as logger
 
 # ── AI helpers ────────────────────────────────────────────────────────────────
 
+@dataclass
+class _AiReply:
+    """A cleaned AI response with the cost of obtaining it.
+
+    Attributes:
+        text: Cleaned response text.
+        elapsed: Wall-clock seconds of the call, retries included.
+        input_tokens: Prompt tokens reported by the provider (0 if unknown).
+        output_tokens: Response tokens reported by the provider (0 if unknown).
+    """
+
+    text: str
+    elapsed: float
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+@dataclass
+class _RunState:
+    """Mutable state shared by the nodes of one Phase 2 run.
+
+    Attributes:
+        similarity_enabled: Whether cosine similarity is still computed. Turned
+            off after the first embedding failure, so a broken embedding server
+            costs one retry cycle per run instead of two per node.
+    """
+
+    similarity_enabled: bool
+
+
+def _format_duration(seconds: float) -> str:
+    """Format a duration as '12.3 s' below one minute, '4 min 05 s' above."""
+    if seconds < 60:
+        return f"{seconds:.1f} s"
+    minutes, secs = divmod(round(seconds), 60)
+    return f"{minutes} min {secs:02d} s"
+
+
+def _reply_stats(input_chars: int, reply: _AiReply) -> str:
+    """Summarise one AI call for the log: sizes, duration and, if known, tokens."""
+    stats = f"in: {input_chars}, out: {len(reply.text)} chars, {_format_duration(reply.elapsed)}"
+    if reply.input_tokens or reply.output_tokens:
+        stats += f", tokens in/out: {reply.input_tokens}/{reply.output_tokens}"
+    return stats
+
+
 def _call_ai(
     prompt: str,
     config: AppConfig,
     preset: Preset,
     *,
     messages: list[dict] | None = None,
-) -> str:
-    """Make a single AI call and return the cleaned response text.
+) -> _AiReply:
+    """Make a single AI call and return the cleaned response with its timing.
 
     Args:
         prompt: User prompt text.
@@ -47,9 +95,10 @@ def _call_ai(
         messages: Optional prior conversation history for context injection.
 
     Returns:
-        Cleaned AI response text.
+        The cleaned response, its duration and the reported token counts.
     """
     system_prompt = preset.system_prompt or None
+    start = time.perf_counter()
     response = call_ai(
         provider=config.provider,
         model=config.model_name,
@@ -59,7 +108,12 @@ def _call_ai(
         temperature=config.temperature,
         thinking=config.thinking,
     )
-    return clean_ai_response(response.text)
+    return _AiReply(
+        text=clean_ai_response(response.text),
+        elapsed=time.perf_counter() - start,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+    )
 
 
 def _get_embedding(text: str, config: AppConfig) -> list[float]:
@@ -70,17 +124,46 @@ def _get_embedding(text: str, config: AppConfig) -> list[float]:
         config: Application configuration (reads embedding_provider and embedding_model).
 
     Returns:
-        Embedding vector as a list of floats, or an empty list on failure.
+        Embedding vector as a list of floats.
+
+    Raises:
+        Exception: Whatever UnifiedAiClient raises once its retries are spent.
     """
+    return _get_embedding_vec(
+        provider=config.embedding_provider,
+        model=config.embedding_model,
+        text=text,
+    )
+
+
+def _compute_similarity(original: str, output: str, config: AppConfig, state: _RunState) -> float | None:
+    """Return the cosine similarity of two texts, or None if it is not computed.
+
+    The first embedding failure is logged once and disables similarity for the
+    rest of the run.
+
+    Args:
+        original: Node content sent to the AI.
+        output: AI response for that node.
+        config: Application configuration (embedding provider and model).
+        state: Run state; similarity_enabled is read and may be switched off.
+
+    Returns:
+        The similarity score, or None when disabled or failed.
+    """
+    if not state.similarity_enabled:
+        return None
     try:
-        return _get_embedding_vec(
-            provider=config.embedding_provider,
-            model=config.embedding_model,
-            text=text,
-        )
+        vec1 = _get_embedding(original, config)
+        vec2 = _get_embedding(output, config)
     except Exception as exc:
-        logger.log_warning(f"Embedding request failed ({config.embedding_model}): {exc}")
-        return []
+        state.similarity_enabled = False
+        logger.log_warning(
+            f"Embedding request failed ({config.embedding_model}): {exc}. "
+            f"Cosine similarity is disabled for the rest of this run."
+        )
+        return None
+    return cosine_similarity(vec1, vec2)
 
 
 # ── Phase 1: Preprocessing ────────────────────────────────────────────────────
@@ -108,10 +191,9 @@ def _run_preprocessing(
     logger.log_separator()
     logger.log_info("Phase 1: Preprocessing")
     prompt = f"{preset.preprocessing_prompt}\n\n{document_text}"
-    input_len = len(document_text)
-    result = _call_ai(prompt, config, preset)
-    logger.log_success(f"Preprocessing complete (in: {input_len}, out: {len(result)} chars).")
-    return result
+    reply = _call_ai(prompt, config, preset)
+    logger.log_success(f"Preprocessing complete ({_reply_stats(len(document_text), reply)}).")
+    return reply.text
 
 
 # ── Phase 2: Node Processing ──────────────────────────────────────────────────
@@ -156,6 +238,7 @@ def _process_node(
     preset: Preset,
     config: AppConfig,
     preprocessed_context: str,
+    state: _RunState,
 ) -> NodeResult:
     """Process a single node through the AI with optional similarity computation.
 
@@ -166,6 +249,7 @@ def _process_node(
         preset: Active preset (reads handling rules and options).
         config: Application configuration.
         preprocessed_context: Phase 1 result, used if include_preprocessed_context is True.
+        state: Run state shared across nodes (similarity on or off).
 
     Returns:
         A NodeResult with the output and optional similarity score.
@@ -218,30 +302,21 @@ def _process_node(
             {"role": "assistant", "content": preprocessed_context},
         ]
 
-    output = _call_ai(prompt, config, preset, messages=messages)
-    
-    # Calculate input length (only the node content characters, not the prompt payload)
-    input_len = len(node.content)
-    
-    logger.log_ai(f"  Node {node.index} - AI responded (in: {input_len}, out: {len(output)} chars)")
+    reply = _call_ai(prompt, config, preset, messages=messages)
+    logger.log_ai(f"  Node {node.index} - AI responded ({_reply_stats(len(node.content), reply)})")
 
-    # --- Optional cosine similarity ---
-    similarity: float | None = None
-    if preset.compute_similarity:
-        vec1 = _get_embedding(node.content, config)
-        vec2 = _get_embedding(output, config)
-        if vec1 and vec2:
-            similarity = cosine_similarity(vec1, vec2)
-            indicator = get_similarity_indicator(similarity)
-            logger.log_metric(f"  Similarity: {similarity:.3f} {indicator}")
+    similarity = _compute_similarity(node.content, reply.text, config, state)
+    if similarity is not None:
+        logger.log_metric(f"  Similarity: {similarity:.3f} {get_similarity_indicator(similarity)}")
 
     return NodeResult(
         node=node,
-        output=output,
+        output=reply.text,
         similarity=similarity,
         was_processed=True,
-        input_chars=input_len,
-        output_chars=len(output),
+        input_chars=len(node.content),
+        output_chars=len(reply.text),
+        elapsed=reply.elapsed,
     )
 
 
@@ -286,8 +361,7 @@ def _run_node_processing(
     node_results: list[NodeResult] = []
     output_parts: list[str] = []
 
-    # Pre-pass: handle merge_next for headings (paragraph mode)
-    # Build a merged version of the nodes list
+    # Pre-pass: merge each heading into the text node that follows it.
     merged_nodes: list[Node] = []
     i = 0
     while i < len(nodes):
@@ -307,24 +381,18 @@ def _run_node_processing(
                 heading_prefix=node.content.strip(),
             )
             merged_nodes.append(merged)
-            i += 2  # skip the next text node, it was merged
+            i += 2
         else:
             merged_nodes.append(node)
             i += 1
 
-    # Section mode: handle part_of_section for non-text blocks by re-assembling
-    # If non_text_handling == part_of_section in section mode, non-text blocks
-    # that appear between text sections are already part of the section node
-    # (parse_into_sections already groups text paragraphs; structural nodes come
-    # through individually). We handle this by detecting section-type nodes
-    # adjacent to text nodes and merging them in.
+    # Pre-pass: absorb the non-text blocks that follow a section into it.
     if preset.node_mode == "section" and preset.non_text_handling == "part_of_section":
         assembled: list[Node] = []
         j = 0
         while j < len(merged_nodes):
             node = merged_nodes[j]
             if node.node_type == "text":
-                # Absorb any immediately following non-heading structural blocks
                 combined_content = node.content
                 while (
                     j + 1 < len(merged_nodes)
@@ -343,9 +411,10 @@ def _run_node_processing(
             j += 1
         merged_nodes = assembled
 
+    state = _RunState(similarity_enabled=preset.compute_similarity)
     for node in merged_nodes:
         logger.log_action(f"Node {node.index}/{len(merged_nodes)} [{node.node_type}]")
-        result = _process_node(node, preset, config, preprocessed)
+        result = _process_node(node, preset, config, preprocessed, state)
         node_results.append(result)
 
         if result.output:
@@ -359,20 +428,22 @@ def _run_node_processing(
                 output_parts.append(result.output)
 
     results_text = "\n\n".join(output_parts)
-    
-    # Calculate sums and ratio for processed nodes
+
     processed_results = [r for r in node_results if r.was_processed]
     if processed_results:
         total_in = sum(r.input_chars for r in processed_results)
         total_out = sum(r.output_chars for r in processed_results)
         ratio = total_out / total_in if total_in > 0 else 0.0
+        total_time = sum(r.elapsed for r in processed_results)
+        average_time = total_time / len(processed_results)
         logger.log_success(
             f"Node processing complete. "
-            f"Total Phase 2 stats: in: {total_in}, out: {total_out} chars | ratio (out/in): {ratio:.3f}"
+            f"Total Phase 2 stats: in: {total_in}, out: {total_out} chars | ratio (out/in): {ratio:.3f} | "
+            f"AI time: {_format_duration(total_time)} (avg {_format_duration(average_time)} per node)"
         )
     else:
         logger.log_success("Node processing complete.")
-        
+
     return node_results, results_text
 
 
@@ -408,28 +479,23 @@ def _run_postprocessing(
     logger.log_separator()
     logger.log_info("Phase 3: Postprocessing")
 
+    attachments = [
+        (title, text)
+        for attached, title, text in (
+            (preset.postprocess_attach_input, "ORIGINAL DOCUMENT", document_text),
+            (preset.postprocess_attach_preprocessed, "PREPROCESSED", preprocessed),
+            (preset.postprocess_attach_results, "NODE RESULTS", results),
+        )
+        if attached and text
+    ]
     parts = [preset.postprocessing_prompt]
-    if preset.postprocess_attach_input and document_text:
-        parts.append(f"\n\n=== ORIGINAL DOCUMENT ===\n{document_text}")
-    if preset.postprocess_attach_preprocessed and preprocessed:
-        parts.append(f"\n\n=== PREPROCESSED ===\n{preprocessed}")
-    if preset.postprocess_attach_results and results:
-        parts.append(f"\n\n=== NODE RESULTS ===\n{results}")
-
+    parts += [f"\n\n=== {title} ===\n{text}" for title, text in attachments]
     prompt = "\n".join(parts)
-    # Calculate input length (sum of the attached source text contents, excluding the prompt itself)
-    attached_parts = []
-    if preset.postprocess_attach_input and document_text:
-        attached_parts.append(document_text)
-    if preset.postprocess_attach_preprocessed and preprocessed:
-        attached_parts.append(preprocessed)
-    if preset.postprocess_attach_results and results:
-        attached_parts.append(results)
-    input_len = sum(len(p) for p in attached_parts)
-    
-    result = _call_ai(prompt, config, preset)
-    logger.log_success(f"Postprocessing complete (in: {input_len}, out: {len(result)} chars).")
-    return result
+
+    reply = _call_ai(prompt, config, preset)
+    attached_chars = sum(len(text) for _, text in attachments)
+    logger.log_success(f"Postprocessing complete ({_reply_stats(attached_chars, reply)}).")
+    return reply.text
 
 
 # ── Output assembly ───────────────────────────────────────────────────────────
@@ -495,6 +561,7 @@ def run_iter(
     Raises:
         ValueError: If neither input_text nor a valid input_file is provided.
     """
+    start = time.perf_counter()
     if config is None:
         config = AppConfig.load()
     if preset is None:
@@ -560,5 +627,5 @@ def run_iter(
         logger.log_save(f"Postprocessed output saved to: {post_path}")
 
     logger.log_separator()
-    logger.log_success("Iter processing complete.")
+    logger.log_success(f"Iter processing complete in {_format_duration(time.perf_counter() - start)}.")
     return proc_result
