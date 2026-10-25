@@ -331,7 +331,7 @@ call may write there. Library callers that handle their own output can select
 │    Model           │    Output file [path input] [💾]             │
 │    Embedding model │                                              │
 │    Temperature     │  ▸ Phase 1 - Preprocessing (expander)        │
-│    Ollama URL      │    [text area for preprocessing_prompt]      │
+│    Keep alive      │    [text area for preprocessing_prompt]      │
 │    Thinking [✓]   │                                              │
 │                    │  ▸ Phase 2 - Node Processing (expander)      │
 │  📂 Presets        │    [text area for node_prompt]               │

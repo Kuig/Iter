@@ -12,11 +12,11 @@ the templates. See [ARCHITECTURE.md](../ARCHITECTURE.md) for why paths resolve t
   "model_name": "gemma4:12b",
   "embedding_provider": "ollama",
   "embedding_model": "bge-m3",
-  "temperature": 0.7,
-  "ollama_url": "http://localhost:11434",
+  "temperature": null,
   "thinking": false,
-  "timeout": 300,
-  "context_size": null
+  "timeout": 600,
+  "context_size": null,
+  "keep_alive_minutes": 20
 }
 ```
 
@@ -40,11 +40,13 @@ Loaded from `config.json`. Holds the **model settings** that are not saved in pr
 | `model_name` | `"gemma4:12b"` | Main generation model |
 | `embedding_provider` | `"ollama"` | AI provider name for embeddings |
 | `embedding_model` | `"bge-m3"` | Model used for cosine similarity |
-| `temperature` | `0.7` | Sampling temperature |
-| `ollama_url` | `"http://localhost:11434"` | Base URL for the Ollama server |
+| `temperature` | `null` | Sampling temperature. `null` leaves it to the provider (for Ollama, the Modelfile) |
 | `thinking` | `false` | Enable extended thinking / reasoning mode where the provider supports it |
-| `timeout` | `300` | Per-request timeout in seconds, registered with the provider |
+| `timeout` | `600` | Timeout in seconds for each attempt of an AI call. Failed attempts are retried by UnifiedAiClient, so one call can take several times this long |
 | `context_size` | `null` | Ollama context window (`num_ctx`). `null` leaves the model default |
+| `keep_alive_minutes` | `20` | How long Ollama keeps the model loaded once idle. `-1` keeps it forever, `0` unloads it after each request |
+
+Ollama is always reached at the UnifiedAiClient default address, `http://localhost:11434`.
 
 ## Saving from the GUI
 
@@ -57,5 +59,7 @@ to the package root, but saving never writes inside an installed package.
 Provider settings are registered with UnifiedAiClient by `AppConfig.apply_to_client()`,
 which each interface calls when its settings become effective: at startup for the CLI and
 the MCP tools, and on each Run for the GUI, where the user can change them between runs.
-The call is idempotent, so an unchanged run re-registers nothing and skips the Ollama
-warm-up.
+The timeout is registered with both the generation and the embedding provider, and the
+generation model is then warmed up. A failed warm-up is reported as a warning; the first AI
+call reports the actual error. The call is idempotent, so an unchanged run re-registers
+nothing and skips the warm-up.

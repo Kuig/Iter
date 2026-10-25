@@ -5,7 +5,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from unified_ai_client import configure_provider, preload_model
+from unified_ai_client import configure_provider, warm_up
 
 import itertool.logger as logger
 
@@ -14,6 +14,23 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 # Settings tuple most recently registered with UnifiedAiClient, so a repeated
 # apply_to_client() with unchanged settings does not re-issue the network warm-up.
 _applied_settings: tuple | None = None
+
+KEEP_ALIVE_FOREVER = -1
+
+
+def keep_alive_value(minutes: int) -> str | int:
+    """Translate keep_alive_minutes into the value Ollama expects.
+
+    Args:
+        minutes: -1 keeps the model loaded forever, 0 unloads it after each
+            request, any positive value is an idle time in minutes.
+
+    Returns:
+        -1 or 0 unchanged, otherwise an Ollama duration string such as '20m'.
+    """
+    if minutes <= 0:
+        return minutes
+    return f"{minutes}m"
 
 
 def resolve_config_path(path: str | Path | None = None) -> Path:
@@ -44,23 +61,26 @@ class AppConfig:
         model_name: Model identifier for main processing calls.
         embedding_provider: AI provider name for embeddings.
         embedding_model: Model identifier for embedding / cosine similarity.
-        temperature: Sampling temperature for AI calls.
-        ollama_url: Base URL for the Ollama server (used when provider is 'ollama').
+        temperature: Sampling temperature for AI calls. None leaves it to the
+            provider (for Ollama, the Modelfile).
         thinking: If True, enable extended thinking / reasoning mode where supported.
-        timeout: Per-request timeout in seconds, registered with the provider.
+        timeout: Per-attempt request timeout in seconds, registered with every
+            provider in use.
         context_size: Context window in tokens (Ollama num_ctx). None leaves the
             model default in place.
+        keep_alive_minutes: How long Ollama keeps the model loaded once idle.
+            -1 keeps it forever, 0 unloads it after each request.
     """
 
     provider: str = "ollama"
     model_name: str = "gemma4:12b"
     embedding_provider: str = "ollama"
     embedding_model: str = "bge-m3"
-    temperature: float = 0.7
-    ollama_url: str = "http://localhost:11434"
+    temperature: float | None = None
     thinking: bool = False
-    timeout: int = 300
+    timeout: int = 600
     context_size: int | None = None
+    keep_alive_minutes: int = 20
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> AppConfig:
@@ -90,8 +110,11 @@ class AppConfig:
     def apply_to_client(self) -> None:
         """Register these settings with UnifiedAiClient, skipping if unchanged.
 
-        Registers the Ollama base URL and timeout, and pre-loads the model when
-        the provider is Ollama so the first node does not pay the load latency.
+        Registers the timeout with every provider in use (generation and
+        embedding), plus keep_alive and context_size with Ollama, then warms up
+        the generation model so the first node does not pay the load latency.
+        A failed warm-up is logged, not raised: the first real call reports
+        the actual error.
 
         Idempotent: a repeated call with identical settings is a no-op, so every
         interface can call it whenever its settings become effective without
@@ -101,21 +124,31 @@ class AppConfig:
         settings = (
             self.provider,
             self.model_name,
-            self.ollama_url,
+            self.embedding_provider,
             self.timeout,
             self.context_size,
+            self.keep_alive_minutes,
         )
         if settings == _applied_settings:
             return
 
-        # Always register the Ollama base URL so UnifiedAiClient uses the right
-        # server even when the provider is not ollama (harmless no-op there).
-        configure_provider("ollama", url=self.ollama_url, timeout=self.timeout)
-        if self.provider == "ollama":
-            preload_model(
-                self.provider,
-                self.model_name,
-                context_size=self.context_size,
+        for provider in sorted({self.provider, self.embedding_provider}):
+            if provider == "ollama":
+                # None is passed on purpose: it clears a context size registered
+                # by an earlier run in the same process.
+                configure_provider(
+                    provider,
+                    timeout=self.timeout,
+                    keep_alive=keep_alive_value(self.keep_alive_minutes),
+                    context_size=self.context_size,
+                )
+            else:
+                configure_provider(provider, timeout=self.timeout)
+
+        if not warm_up(self.provider, self.model_name):
+            logger.log_warning(
+                f"Warm-up of {self.provider}/{self.model_name} failed; "
+                f"the first AI call will report the error."
             )
         _applied_settings = settings
 

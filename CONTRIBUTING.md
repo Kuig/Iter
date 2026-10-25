@@ -21,7 +21,7 @@ pip install -r requirements_dev.txt   # editable: ../UnifiedAiClient + .
 
 `requirements_dev.txt` installs the sibling repository editable, so changes to the AI layer take
 effect without reinstalling. `requirements_prod.txt` pins a Git tag instead; bump that tag
-whenever a `call_ai`, `get_embedding`, `configure_provider` or `preload_model` signature changes.
+whenever a `call_ai`, `get_embedding`, `configure_provider` or `warm_up` signature changes.
 
 ### Why there is no `gui` extra
 

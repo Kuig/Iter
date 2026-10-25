@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `keep_alive_minutes` (default 20) sets how long Ollama keeps the model loaded once idle;
+  `-1` keeps it loaded forever, `0` unloads it after each request.
+
+### Changed
+
+- **`ollama_url` is removed from `config.json`.** Ollama is always reached at the
+  UnifiedAiClient default address; an old key is reported as unknown and ignored.
+- The default `timeout` is 600 seconds, and it now applies to every provider in use,
+  including the embedding provider. It was previously registered for Ollama only.
+- `temperature` can be `null`, which leaves it to the provider (for Ollama, the Modelfile).
+  The GUI has a **Force temperature** toggle.
+- The model warm-up runs for every provider and no longer stops the GUI or the CLI when it
+  fails: it logs a warning, and the first AI call reports the error.
+- UnifiedAiClient is pinned to v0.8.0.
+
+### Fixed
+
+- Setting the context size back to 0 in the GUI now restores the model default. The earlier
+  value used to stay in effect until the process restarted.
+
 ## [0.1.2] - 2026-08-30
 
 ### Added

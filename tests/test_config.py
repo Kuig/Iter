@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 import itertool.config as config_module
-from itertool.config import AppConfig, resolve_config_path
+from itertool.config import AppConfig, keep_alive_value, resolve_config_path
 
 
 class TestAppConfigLoad(unittest.TestCase):
@@ -31,7 +31,7 @@ class TestAppConfigLoad(unittest.TestCase):
         self.assertAlmostEqual(cfg.temperature, 0.1)
 
     def test_unknown_keys_are_dropped_but_warned_about(self):
-        path = self._write({"provider": "google", "legacy_key": 1})
+        path = self._write({"provider": "google", "ollama_url": "http://localhost:11434"})
         warnings: list[str] = []
         original = config_module.logger.log_warning
         config_module.logger.log_warning = warnings.append
@@ -42,7 +42,7 @@ class TestAppConfigLoad(unittest.TestCase):
 
         self.assertEqual(cfg.provider, "google")
         self.assertEqual(len(warnings), 1)
-        self.assertIn("legacy_key", warnings[0])
+        self.assertIn("ollama_url", warnings[0])
 
     def test_no_warning_when_every_key_is_known(self):
         path = self._write({"provider": "google"})
@@ -67,6 +67,7 @@ class TestAppConfigSave(unittest.TestCase):
             temperature=0.25,
             timeout=120,
             context_size=8192,
+            keep_alive_minutes=-1,
         )
         original.save(path)
         self.assertEqual(AppConfig.load(path), original)
@@ -87,29 +88,55 @@ class TestResolveConfigPath(unittest.TestCase):
         self.assertEqual(resolve_config_path().name, "config.json")
 
 
+class TestKeepAliveValue(unittest.TestCase):
+    """-1 and 0 are Ollama sentinels; anything else is a duration in minutes."""
+
+    def test_forever(self):
+        self.assertEqual(keep_alive_value(-1), -1)
+
+    def test_unload_after_each_request(self):
+        self.assertEqual(keep_alive_value(0), 0)
+
+    def test_minutes(self):
+        self.assertEqual(keep_alive_value(20), "20m")
+
+
 class TestApplyToClient(unittest.TestCase):
     """Registration is idempotent, and re-applies when settings change."""
 
     def setUp(self):
         self.configured: list[tuple] = []
-        self.preloaded: list[tuple] = []
+        self.warmed: list[tuple] = []
+        self.warm_up_result = True
+        self.warnings: list[str] = []
         self._orig_configure = config_module.configure_provider
-        self._orig_preload = config_module.preload_model
+        self._orig_warm_up = config_module.warm_up
+        self._orig_warning = config_module.logger.log_warning
         self._orig_applied = config_module._applied_settings
 
         config_module.configure_provider = lambda name, **kw: self.configured.append((name, kw))
-        config_module.preload_model = lambda p, m, **kw: self.preloaded.append((p, m, kw))
+
+        def fake_warm_up(provider, model, **kw):
+            self.warmed.append((provider, model))
+            return self.warm_up_result
+
+        config_module.warm_up = fake_warm_up
+        config_module.logger.log_warning = self.warnings.append
         config_module._applied_settings = None
 
     def tearDown(self):
         config_module.configure_provider = self._orig_configure
-        config_module.preload_model = self._orig_preload
+        config_module.warm_up = self._orig_warm_up
+        config_module.logger.log_warning = self._orig_warning
         config_module._applied_settings = self._orig_applied
 
-    def test_first_call_registers(self):
+    def _registered(self) -> dict[str, dict]:
+        return {name: kw for name, kw in self.configured}
+
+    def test_first_call_registers_and_warms_up(self):
         AppConfig().apply_to_client()
         self.assertEqual(len(self.configured), 1)
-        self.assertEqual(len(self.preloaded), 1)
+        self.assertEqual(self.warmed, [("ollama", AppConfig().model_name)])
 
     def test_repeated_call_with_same_settings_is_a_no_op(self):
         cfg = AppConfig()
@@ -117,31 +144,45 @@ class TestApplyToClient(unittest.TestCase):
         cfg.apply_to_client()
         AppConfig().apply_to_client()
         self.assertEqual(len(self.configured), 1)
-        self.assertEqual(len(self.preloaded), 1)
+        self.assertEqual(len(self.warmed), 1)
 
     def test_changed_provider_re_registers(self):
         AppConfig().apply_to_client()
         AppConfig(provider="google").apply_to_client()
-        self.assertEqual(len(self.configured), 2)
+        self.assertEqual(len(self.warmed), 2)
 
-    def test_changed_url_re_registers(self):
+    def test_changed_keep_alive_re_registers(self):
         AppConfig().apply_to_client()
-        AppConfig(ollama_url="http://elsewhere:11434").apply_to_client()
-        self.assertEqual(len(self.configured), 2)
-        self.assertEqual(self.configured[1][1]["url"], "http://elsewhere:11434")
+        AppConfig(keep_alive_minutes=-1).apply_to_client()
+        self.assertEqual(self.configured[-1][1]["keep_alive"], -1)
 
-    def test_preload_only_for_ollama(self):
-        AppConfig(provider="google").apply_to_client()
-        self.assertEqual(len(self.configured), 1)
-        self.assertEqual(self.preloaded, [])
+    def test_timeout_is_registered_for_both_providers(self):
+        AppConfig(provider="google", embedding_provider="ollama", timeout=42).apply_to_client()
+        registered = self._registered()
+        self.assertEqual(registered["google"]["timeout"], 42)
+        self.assertEqual(registered["ollama"]["timeout"], 42)
 
-    def test_context_size_is_passed_to_preload(self):
+    def test_ollama_options_are_not_sent_to_other_providers(self):
+        AppConfig(provider="google", embedding_provider="google").apply_to_client()
+        self.assertEqual(self._registered(), {"google": {"timeout": AppConfig().timeout}})
+
+    def test_ollama_receives_keep_alive_and_context_size(self):
+        AppConfig(context_size=8192, keep_alive_minutes=20).apply_to_client()
+        ollama = self._registered()["ollama"]
+        self.assertEqual(ollama["context_size"], 8192)
+        self.assertEqual(ollama["keep_alive"], "20m")
+
+    def test_unset_context_size_is_passed_to_clear_an_earlier_one(self):
         AppConfig(context_size=8192).apply_to_client()
-        self.assertEqual(self.preloaded[0][2]["context_size"], 8192)
+        AppConfig(context_size=None).apply_to_client()
+        self.assertIn("context_size", self.configured[-1][1])
+        self.assertIsNone(self.configured[-1][1]["context_size"])
 
-    def test_timeout_is_registered(self):
-        AppConfig(timeout=42).apply_to_client()
-        self.assertEqual(self.configured[0][1]["timeout"], 42)
+    def test_failed_warm_up_warns_instead_of_raising(self):
+        self.warm_up_result = False
+        AppConfig().apply_to_client()
+        self.assertEqual(len(self.warnings), 1)
+        self.assertIn("Warm-up", self.warnings[0])
 
 
 if __name__ == "__main__":

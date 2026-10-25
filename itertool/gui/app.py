@@ -13,7 +13,7 @@ import streamlit as st
 from unified_ai_client import silence_sdks
 
 import itertool.logger as logger
-from itertool.config import AppConfig
+from itertool.config import KEEP_ALIVE_FOREVER, AppConfig
 from itertool.models import Preset
 from itertool.processor import run_iter
 
@@ -39,6 +39,8 @@ _PROVIDERS = [
     "ollama", "google", "anthropic", "openai",
     "mistral", "cohere", "groq", "xai", "lmstudio", "llamacpp",
 ]
+
+_DEFAULT_TEMPERATURE = 0.7
 
 _HEADING_OPTIONS = {
     "report_unprocessed": "Pass through unchanged",
@@ -120,12 +122,15 @@ def _init_state() -> None:
         "model_name": cfg.model_name,
         "embedding_provider": cfg.embedding_provider,
         "embedding_model": cfg.embedding_model,
-        "temperature": cfg.temperature,
-        "ollama_url": cfg.ollama_url,
+        # None leaves the temperature to the provider; the slider keeps a value
+        # either way, so switching the toggle on restores the last one.
+        "force_temperature": cfg.temperature is not None,
+        "temperature": cfg.temperature if cfg.temperature is not None else _DEFAULT_TEMPERATURE,
         "thinking": cfg.thinking,
         "timeout": cfg.timeout,
         # 0 is the widget's way of saying "leave the model default" (None).
         "context_size": cfg.context_size or 0,
+        "keep_alive_minutes": cfg.keep_alive_minutes,
         # Preset fields (bound directly to widget keys)
         "system_prompt": (
             "You are a professional editor. "
@@ -245,11 +250,11 @@ def _state_to_config() -> AppConfig:
         model_name=st.session_state.model_name,
         embedding_provider=st.session_state.embedding_provider,
         embedding_model=st.session_state.embedding_model,
-        temperature=st.session_state.temperature,
-        ollama_url=st.session_state.ollama_url,
+        temperature=st.session_state.temperature if st.session_state.force_temperature else None,
         thinking=st.session_state.thinking,
         timeout=st.session_state.timeout,
         context_size=st.session_state.context_size or None,
+        keep_alive_minutes=st.session_state.keep_alive_minutes,
     )
 
 
@@ -305,18 +310,19 @@ with st.sidebar:
         key="embedding_model",
     )
 
+    st.toggle(
+        "Force temperature",
+        key="force_temperature",
+        help="When off, the provider default applies (for Ollama, the Modelfile).",
+    )
+
     st.slider(
         "Temperature",
         min_value=0.0,
         max_value=2.0,
         step=0.05,
         key="temperature",
-    )
-
-    st.text_input(
-        "Ollama URL",
-        key="ollama_url",
-        help="Base URL for the Ollama server (used when provider is 'ollama').",
+        disabled=not st.session_state.force_temperature,
     )
 
     st.toggle(
@@ -330,7 +336,7 @@ with st.sidebar:
         min_value=1,
         step=10,
         key="timeout",
-        help="Per-request timeout registered with the provider.",
+        help="Per-attempt timeout for every AI call. Failed attempts are retried.",
     )
 
     st.number_input(
@@ -339,6 +345,15 @@ with st.sidebar:
         step=1024,
         key="context_size",
         help="Ollama context window (num_ctx). 0 leaves the model default in place.",
+    )
+
+    st.number_input(
+        "Keep alive (min)",
+        min_value=KEEP_ALIVE_FOREVER,
+        step=5,
+        key="keep_alive_minutes",
+        help="How long Ollama keeps the model loaded once idle. "
+             "-1 keeps it loaded forever, 0 unloads it after each request.",
     )
 
     if st.button("💾 Save as default", use_container_width=True, key="btn_save_config"):
@@ -595,12 +610,12 @@ if run_btn:
     else:
         preset = _state_to_preset()
         config = _state_to_config()
-        # The user can change provider or model between runs, so settings are
-        # applied here, where they become effective. No-op when unchanged.
-        config.apply_to_client()
 
         with st.spinner("Processing..."):
             try:
+                # The user can change provider or model between runs, so settings
+                # are applied here, where they become effective. No-op when unchanged.
+                config.apply_to_client()
                 result = run_iter(
                     input_file=input_path,
                     output_file=output_path or None,
