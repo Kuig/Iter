@@ -30,7 +30,8 @@ pip install -r requirements_dev.txt
 ### GUI (recommended)
 
 ```bash
-iter gui
+iter gui            # empty input
+iter gui doc.md     # doc.md already set as the input file
 ```
 
 ### CLI
@@ -108,7 +109,13 @@ file, separators, interlacing) do not count as a change.
 
 ### Windows Context Menu Integration
 
-You can integrate Iter into the Windows File Explorer context menu. This lets you right-click any `.md` or `.markdown` file and process it directly with any of your saved presets in a single click.
+You can integrate Iter into the Windows File Explorer context menu. Right-click any `.md` or `.markdown` file to get two entries:
+
+- **Process with Iter...**: a submenu with one entry per saved preset. It runs the preset on the
+  file through `Windows Integration/run_preset.cmd`, from the project folder, and writes
+  `<name>_processed<ext>` next to the file. Running it again on the same file writes the same
+  output, so an interrupted run resumes. The console window stays open only when the run fails.
+- **Open with Iter**: opens the GUI with the file already set as the input.
 
 1. Open the `Windows Integration` directory.
 2. Run the PowerShell script to scan your `Presets/` directory and generate the custom registry entries:
@@ -118,13 +125,15 @@ You can integrate Iter into the Windows File Explorer context menu. This lets yo
 3. Double-click the generated `register.reg` file to merge it into the Windows Registry.
 4. To remove the context menu entries, double-click the `unregister.reg` file.
 
-*Note: If you add, rename, or delete a preset in the `Presets/` folder, simply rerun the PowerShell script and merge the new `register.reg` to keep the context menu in sync.*
+*Note: If you add, rename, or delete a preset in the `Presets/` folder, rerun the PowerShell script and merge the new `register.reg`: it replaces the whole submenu, so deleted presets disappear too. Explorer shows at most 16 entries in a submenu, so the script stops with an error above 16 presets.*
+
+The entries call the `.venv` of the project folder, so they need the project installed there.
 
 #### GUI launcher
 
-`Windows Integration/launch_gui.bat` starts the GUI from the project folder: it changes into the
-project root, activates `.venv`, and runs `iter gui`. Use it from a desktop shortcut, so the GUI
-always starts where `Presets/`, `config.json` and `secrets.json` are.
+`Windows Integration/launch_gui.bat [file]` starts the GUI from the project folder: it changes into
+the project root, activates `.venv`, and runs `iter gui`, passing the file when given. Use it from a
+desktop shortcut, so the GUI always starts where `Presets/`, `config.json` and `secrets.json` are.
 
 ---
 

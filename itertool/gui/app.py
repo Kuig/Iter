@@ -1,6 +1,7 @@
 """Streamlit GUI for Iter - Iterative Node-Based Document Processor."""
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from unified_ai_client import list_models, list_providers, silence_sdks
 import itertool.logger as logger
 from itertool.checkpoint import CheckpointMismatchError
 from itertool.config import KEEP_ALIVE_FOREVER, AppConfig
+from itertool.gui.file_dialog import ask_path
 from itertool.models import Preset
 from itertool.processor import run_iter
 
@@ -37,6 +39,8 @@ _PRESETS_DIR = Path.cwd() / "Presets"
 _PRESETS_DIR.mkdir(exist_ok=True)
 
 _DEFAULT_TEMPERATURE = 0.7
+
+_FILETYPES = [("Markdown Files", "*.md"), ("Text Files", "*.txt"), ("All Files", "*.*")]
 
 _HEADING_OPTIONS = {
     "report_unprocessed": "Pass through unchanged",
@@ -77,30 +81,9 @@ def _file_picker(label: str, key: str, save: bool = False) -> str:
     with col_btn:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         if st.button("📁" if not save else "💾", key=f"{key}_btn", use_container_width=True):
-            import tkinter as tk
-            from tkinter import filedialog
-            root = tk.Tk()
-            root.withdraw()
-            root.wm_attributes("-topmost", 1)
-            # An absolute path replaces the working directory; a relative one joins it.
-            init_dir = str(Path.cwd() / Path(st.session_state.get(key, "")).parent)
-            if save:
-                selected = filedialog.asksaveasfilename(
-                    initialdir=init_dir,
-                    defaultextension=".md",
-                    filetypes=[("Markdown Files", "*.md"), ("Text Files", "*.txt"), ("All Files", "*.*")],
-                )
-            else:
-                selected = filedialog.askopenfilename(
-                    initialdir=init_dir,
-                    filetypes=[("Markdown Files", "*.md"), ("Text Files", "*.txt"), ("All Files", "*.*")],
-                )
+            selected = ask_path(st.session_state.get(key, ""), _FILETYPES, save=save, default_ext=".md")
             if selected:
-                try:
-                    rel = Path(selected).relative_to(Path.cwd())
-                    st.session_state[key] = rel.as_posix()
-                except ValueError:
-                    st.session_state[key] = Path(selected).as_posix()
+                st.session_state[key] = selected
                 st.rerun()
     return st.session_state.get(key, "")
 
@@ -191,12 +174,22 @@ def _model_picker(label: str, key: str, provider: str, embeddings: bool) -> None
     st.selectbox(label, options=options, key=key)
 
 
+def _start_input() -> str:
+    """The input given by ``iter gui <file>`` (``--input`` after ``--``), or ''.
+
+    Other arguments, such as a test runner's, are ignored.
+    """
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--input", default="")
+    return parser.parse_known_args()[0].input
+
+
 def _init_state() -> None:
     """Initialize all session state keys with defaults."""
     cfg = AppConfig.load()
     defaults: dict = {
         # File paths
-        "input_path": "",
+        "input_path": _start_input(),
         "output_path": "",
         # Model settings (bound directly to widget keys)
         "provider": cfg.provider,

@@ -106,13 +106,14 @@ def cmd_gui(args: argparse.Namespace) -> None:
     """Handle the gui subcommand -- launch the Streamlit web interface.
 
     Args:
-        args: Parsed argument namespace (unused).
+        args: Parsed argument namespace; ``args.input``, when given, starts as the input path.
     """
+    command = [sys.executable, "-m", "streamlit", "run", str(Path(__file__).parent / "gui" / "app.py")]
+    if args.input:
+        # Streamlit hands what follows "--" to the script as its sys.argv.
+        command += ["--", "--input", str(Path(args.input).resolve())]
     try:
-        subprocess.run([
-            sys.executable, "-m", "streamlit", "run",
-            str(Path(__file__).parent / "gui" / "app.py"),
-        ])
+        subprocess.run(command)
     except Exception as exc:
         logger.log_error(f"Failed to launch the GUI: {exc}")
         sys.exit(1)
@@ -149,6 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_mcp.set_defaults(func=cmd_mcp)
 
     p_gui = subparsers.add_parser("gui", help="Launch the Streamlit web interface.")
+    p_gui.add_argument("input", nargs="?", help="Markdown file to set as the input.")
     p_gui.set_defaults(func=cmd_gui)
 
     return parser

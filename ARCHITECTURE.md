@@ -47,7 +47,8 @@ Iter/
 │   ├── mcp_tools.py           # MCP tool registrations
 │   ├── processor.py           # Core 3-phase processing pipeline
 │   └── gui/
-│       └── app.py             # Streamlit web interface
+│       ├── app.py             # Streamlit web interface
+│       └── file_dialog.py     # Native file dialogs, run in a child process
 ├── Presets/                   # One JSON file per preset
 │   ├── condensation.json
 │   └── empty.json

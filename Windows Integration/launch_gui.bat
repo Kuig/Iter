@@ -1,7 +1,12 @@
 @echo off
-REM Launch the Iter GUI from the project folder.
+REM Launch the Iter GUI from the project folder:
+REM   launch_gui.bat [input file]
+REM With a file (the "Open with Iter" context menu entry), the GUI starts with it
+REM as the input.
 REM Everything in Iter resolves against the current working directory,
 REM so the GUI must start from the project root (Presets\, config.json, secrets.json).
+setlocal
+set "INPUT=%~f1"
 cd /d "%~dp0.."
 
 if not exist ".venv\Scripts\activate.bat" (
@@ -12,4 +17,8 @@ if not exist ".venv\Scripts\activate.bat" (
 )
 
 call .venv\Scripts\activate.bat
-iter gui
+if "%INPUT%"=="" (
+    iter gui
+) else (
+    iter gui "%INPUT%"
+)

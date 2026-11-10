@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Open with Iter** in the Explorer context menu of `.md` and `.markdown` files: it opens the
+  GUI with the file already set as the input. `iter gui` takes an optional input file for the
+  same purpose, and so does `Windows Integration/launch_gui.bat`.
+
+### Changed
+
+- Re-merging `register.reg` replaces the whole preset submenu, so the entries of deleted or
+  renamed presets disappear. The script stops with an error above 16 presets, the most Explorer
+  shows in a submenu.
+- The console window of a preset run from the Explorer menu stays open only when the run fails.
+
+### Fixed
+
+- The preset entries of the Explorer menu did not work: they ran outside the project folder, so
+  the preset was not found, and passed an unexpanded output path. They now run through
+  `Windows Integration/run_preset.cmd`, from the project folder, and write
+  `<name>_processed<ext>` next to the file.
+- The 📁 and 💾 buttons of the GUI no longer fail with "main thread is not in main loop": the
+  file dialog runs in a separate process.
+
 ## [0.2.0] - 2026-10-25
 
 ### Added
