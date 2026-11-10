@@ -43,7 +43,7 @@ class _StubAi:
     def __enter__(self):
         self._original = processor._call_ai
 
-        def fake(prompt, config, preset, messages=None):
+        def fake(prompt, config, preset, messages=None, file_path=None):
             if self.fail_on is not None and len(self.prompts) + 1 == self.fail_on:
                 raise ConnectionError("provider went away")
             self.prompts.append(prompt)
@@ -229,6 +229,35 @@ class TestPostprocessingReuse(_Workspace):
         stub = self._run(self.PRESET, on_mismatch="continue")
         self.assertEqual(len(stub.prompts), 2)
         self.assertTrue(stub.prompts[-1].startswith("Review."))
+
+
+class TestImageNodeKeys(_Workspace):
+    """An attached image is part of its node's key, so a changed file is resent."""
+
+    IMAGE_DOC = "Alpha paragraph.\n\n![chart](chart.png)\n"
+    # The run stops at Phase 3, after both nodes are saved.
+    PRESET = Preset(node_prompt="Describe.", image_handling="standalone_nodes",
+                    postprocessing_prompt="Review.")
+
+    def setUp(self):
+        super().setUp()
+        self.input.write_text(self.IMAGE_DOC, encoding="utf-8")
+        self.image = self.dir / "chart.png"
+        self.image.write_bytes(b"first")
+
+    def test_changed_image_redoes_only_its_node(self):
+        self._interrupted_run(fail_on=3, preset=self.PRESET)
+        self.image.write_bytes(b"second")
+        stub = self._run(self.PRESET)
+        self.assertEqual(len(stub.prompts), 2)
+        self.assertIn("![chart](chart.png)", stub.prompts[0])
+        self.assertTrue(stub.prompts[1].startswith("Review."))
+
+    def test_unchanged_image_is_restored(self):
+        self._interrupted_run(fail_on=3, preset=self.PRESET)
+        stub = self._run(self.PRESET)
+        self.assertEqual(len(stub.prompts), 1)
+        self.assertTrue(stub.prompts[0].startswith("Review."))
 
 
 if __name__ == "__main__":

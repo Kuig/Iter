@@ -7,14 +7,18 @@ Implements the three-phase pipeline:
 """
 from __future__ import annotations
 
+import mimetypes
+import tempfile
 import time
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
 from unified_ai_client import call_ai
 from unified_ai_client import get_embedding as _get_embedding_vec
 
-from itertool.checkpoint import Checkpoint, fingerprint, node_keys, progress_path
+from itertool.checkpoint import Checkpoint, file_digest, fingerprint, node_keys, progress_path
 from itertool.config import AppConfig
 from itertool.models import (
     Node,
@@ -28,6 +32,7 @@ from itertool.markdown_utils import (
     parse_into_paragraphs,
     parse_into_sections,
     clean_ai_response,
+    image_source,
 )
 import itertool.logger as logger
 
@@ -88,6 +93,7 @@ def _call_ai(
     preset: Preset,
     *,
     messages: list[dict] | None = None,
+    file_path: Path | None = None,
 ) -> _AiReply:
     """Make a single AI call and return the cleaned response with its timing.
 
@@ -96,6 +102,7 @@ def _call_ai(
         config: Application configuration (provider, model, temperature, thinking).
         preset: Active preset (provides system_prompt).
         messages: Optional prior conversation history for context injection.
+        file_path: Optional file attached to the prompt (an image node's file).
 
     Returns:
         The cleaned response, its duration and the reported token counts.
@@ -108,6 +115,7 @@ def _call_ai(
         prompt=prompt,
         system_prompt=system_prompt,
         messages=messages,
+        file_path=str(file_path) if file_path else None,
         temperature=config.temperature,
         thinking=config.thinking,
     )
@@ -119,12 +127,14 @@ def _call_ai(
     )
 
 
-def _get_embedding(text: str, config: AppConfig) -> list[float]:
-    """Compute a text embedding vector using the configured embedding model.
+def _get_embedding(text: str, config: AppConfig, file_path: Path | None = None) -> list[float]:
+    """Compute an embedding vector using the configured embedding model.
 
     Args:
         text: Text to embed.
         config: Application configuration (reads embedding_provider and embedding_model).
+        file_path: Optional file embedded together with the text into one
+            vector; needs a multimodal embedding model.
 
     Returns:
         Embedding vector as a list of floats.
@@ -136,10 +146,17 @@ def _get_embedding(text: str, config: AppConfig) -> list[float]:
         provider=config.embedding_provider,
         model=config.embedding_model,
         text=text,
+        file_path=str(file_path) if file_path else None,
     )
 
 
-def _compute_similarity(original: str, output: str, config: AppConfig, state: _RunState) -> float | None:
+def _compute_similarity(
+    original: str,
+    output: str,
+    config: AppConfig,
+    state: _RunState,
+    file_path: Path | None = None,
+) -> float | None:
     """Return the cosine similarity of two texts, or None if it is not computed.
 
     The first embedding failure is logged once and disables similarity for the
@@ -150,6 +167,7 @@ def _compute_similarity(original: str, output: str, config: AppConfig, state: _R
         output: AI response for that node.
         config: Application configuration (embedding provider and model).
         state: Run state; similarity_enabled is read and may be switched off.
+        file_path: File sent to the AI with the node, embedded with original.
 
     Returns:
         The similarity score, or None when disabled or failed.
@@ -157,7 +175,7 @@ def _compute_similarity(original: str, output: str, config: AppConfig, state: _R
     if not state.similarity_enabled:
         return None
     try:
-        vec1 = _get_embedding(original, config)
+        vec1 = _get_embedding(original, config, file_path)
         vec2 = _get_embedding(output, config)
     except Exception as exc:
         state.similarity_enabled = False
@@ -244,6 +262,86 @@ def _build_separator(node: Node, similarity: float | None, show: bool) -> str:
     return " - ".join(parts)
 
 
+def _handling_for(node: Node, preset: Preset) -> str:
+    """Return the handling rule that governs a structural (non-text) node.
+
+    Args:
+        node: A node whose node_type is not 'text'.
+        preset: Active preset (reads the three handling fields).
+
+    Returns:
+        The handling value of heading_handling, image_handling or non_text_handling.
+    """
+    if node.node_type == "heading":
+        return preset.heading_handling
+    if node.node_type == "image":
+        return preset.image_handling
+    return preset.non_text_handling
+
+
+def _fetch_image(url: str, dest_dir: Path, index: int) -> Path:
+    """Download a remote image into dest_dir.
+
+    The file keeps an image extension, taken from the URL path or else from the
+    Content-Type, because UnifiedAiClient decides how to send a file by its
+    extension.
+
+    Args:
+        url: http(s) URL of the image.
+        dest_dir: Directory the file is written to.
+        index: Node.index of the image, used to name the file.
+
+    Returns:
+        Path of the downloaded file.
+
+    Raises:
+        urllib.error.URLError: If the download fails.
+    """
+    with urllib.request.urlopen(url, timeout=60) as response:
+        data = response.read()
+        content_type = response.headers.get_content_type()
+    suffix = Path(urllib.parse.urlparse(url).path).suffix
+    if not mimetypes.guess_type(f"x{suffix}")[0]:
+        suffix = mimetypes.guess_extension(content_type) or ""
+    path = dest_dir / f"image-{index}{suffix}"
+    path.write_bytes(data)
+    return path
+
+
+def _resolve_images(nodes: list[Node], base_dir: Path, dest_dir: Path) -> dict[int, Path]:
+    """Locate the file of every image node, downloading remote ones.
+
+    Runs before any node is sent to the AI, so a missing image stops the run
+    before it spends calls on the nodes in front of it.
+
+    Args:
+        nodes: The node list after the pre-passes.
+        base_dir: Directory relative image paths are resolved against.
+        dest_dir: Directory downloaded images are written to.
+
+    Returns:
+        Image file paths, by Node.index.
+
+    Raises:
+        FileNotFoundError: If a local image does not exist.
+        urllib.error.URLError: If a remote image cannot be downloaded.
+    """
+    paths: dict[int, Path] = {}
+    for node in nodes:
+        if node.node_type != "image":
+            continue
+        src = image_source(node.content)
+        if urllib.parse.urlparse(src).scheme in ("http", "https"):
+            logger.log_action(f"Downloading image of node §{node.index}: {src}")
+            paths[node.index] = _fetch_image(src, dest_dir, node.index)
+            continue
+        path = base_dir / urllib.parse.unquote(src)
+        if not path.is_file():
+            raise FileNotFoundError(f"Image of node §{node.index} not found: {path}")
+        paths[node.index] = path
+    return paths
+
+
 def _process_node(
     node: Node,
     preset: Preset,
@@ -251,6 +349,7 @@ def _process_node(
     preprocessed_context: str,
     state: _RunState,
     key: str = "",
+    image_path: Path | None = None,
 ) -> NodeResult:
     """Process a single node through the AI with optional similarity computation.
 
@@ -264,6 +363,7 @@ def _process_node(
         preprocessed_context: Phase 1 result, used if include_preprocessed_context is True.
         state: Run state shared across nodes (similarity, progress file).
         key: The node's progress-file key, from checkpoint.node_keys().
+        image_path: File attached to the AI call, for an image node.
 
     Returns:
         A NodeResult with the output and optional similarity score.
@@ -272,11 +372,7 @@ def _process_node(
 
     # --- Determine handling for structural (non-text) nodes ---
     if is_structural:
-        handling = (
-            preset.heading_handling
-            if node.node_type == "heading"
-            else preset.non_text_handling
-        )
+        handling = _handling_for(node, preset)
 
         if handling == "discard":
             logger.log_action("  Discarded")
@@ -329,10 +425,10 @@ def _process_node(
             {"role": "assistant", "content": preprocessed_context},
         ]
 
-    reply = _call_ai(prompt, config, preset, messages=messages)
+    reply = _call_ai(prompt, config, preset, messages=messages, file_path=image_path)
     logger.log_ai(f"  AI responded ({_reply_stats(len(node.content), reply)})")
 
-    similarity = _compute_similarity(node.content, reply.text, config, state)
+    similarity = _compute_similarity(node.content, reply.text, config, state, image_path)
     if similarity is not None:
         logger.log_metric(f"  Similarity: {similarity:.3f} {get_similarity_indicator(similarity)}")
 
@@ -356,14 +452,15 @@ def _run_node_processing(
     config: AppConfig,
     preprocessed: str,
     checkpoint: Checkpoint | None = None,
+    base_dir: Path | None = None,
 ) -> tuple[list[NodeResult], str]:
     """Run Phase 2: apply node_prompt to each node independently.
 
     Skipped if preset.node_prompt is empty.
 
     Applies merge_next heading logic by looking ahead in the node list.
-    Applies part_of_section non-text handling in section mode by re-assembling
-    non-text content into the surrounding section text before AI call.
+    Applies part_of_section non-text and image handling in section mode by
+    re-assembling those blocks into the surrounding section text before AI call.
 
     Args:
         document_text: Full input document text.
@@ -371,9 +468,15 @@ def _run_node_processing(
         config: Application configuration.
         preprocessed: Phase 1 result (may be empty).
         checkpoint: Progress file to restore from and record into, or None.
+        base_dir: Directory relative image paths are resolved against.
+            Defaults to the working directory.
 
     Returns:
         Tuple of (list of NodeResult, assembled results string).
+
+    Raises:
+        FileNotFoundError: If image_handling sends images and one is missing.
+        urllib.error.URLError: If a remote image cannot be downloaded.
     """
     if not preset.node_prompt.strip():
         return [], ""
@@ -381,11 +484,13 @@ def _run_node_processing(
     logger.log_separator()
     logger.log_info(f"Phase 2: Node Processing ({preset.node_mode} mode)")
 
-    if preset.non_text_handling == "part_of_section" and preset.node_mode != "section":
-        logger.log_warning(
-            "non_text_handling='part_of_section' requires section mode; "
-            "non-text nodes will pass through unchanged"
-        )
+    if preset.node_mode != "section":
+        for field_name, label in (("non_text_handling", "non-text"), ("image_handling", "image")):
+            if getattr(preset, field_name) == "part_of_section":
+                logger.log_warning(
+                    f"{field_name}='part_of_section' requires section mode; "
+                    f"{label} nodes will pass through unchanged"
+                )
 
     nodes = _resolve_nodes(document_text, preset)
 
@@ -418,7 +523,9 @@ def _run_node_processing(
             i += 1
 
     # Pre-pass: absorb the non-text blocks that follow a section into it.
-    if preset.node_mode == "section" and preset.non_text_handling == "part_of_section":
+    if preset.node_mode == "section" and "part_of_section" in (
+        preset.non_text_handling, preset.image_handling
+    ):
         assembled: list[Node] = []
         j = 0
         while j < len(merged_nodes):
@@ -428,6 +535,7 @@ def _run_node_processing(
                 while (
                     j + 1 < len(merged_nodes)
                     and merged_nodes[j + 1].node_type not in ("text", "heading")
+                    and _handling_for(merged_nodes[j + 1], preset) == "part_of_section"
                 ):
                     j += 1
                     combined_content += f"\n\n{merged_nodes[j].content}"
@@ -446,20 +554,28 @@ def _run_node_processing(
     total = len(merged_nodes)
     logger.log_action(f"Found {total} nodes. Processing...")
     state = _RunState(similarity_enabled=preset.compute_similarity, checkpoint=checkpoint)
-    for position, (node, key) in enumerate(zip(merged_nodes, node_keys(merged_nodes)), 1):
-        logger.log_action(f"Node {position}/{total} (§{node.index}) [{node.node_type}]")
-        result = _process_node(node, preset, config, preprocessed, state, key)
-        node_results.append(result)
+    with tempfile.TemporaryDirectory(prefix="iter-images-") as download_dir:
+        images: dict[int, Path] = {}
+        if preset.image_handling == "standalone_nodes":
+            images = _resolve_images(merged_nodes, base_dir or Path.cwd(), Path(download_dir))
+        image_digests = {index: file_digest(path) for index, path in images.items()}
+        keys = node_keys(merged_nodes, image_digests)
+        for position, (node, key) in enumerate(zip(merged_nodes, keys), 1):
+            logger.log_action(f"Node {position}/{total} (§{node.index}) [{node.node_type}]")
+            result = _process_node(
+                node, preset, config, preprocessed, state, key, images.get(node.index)
+            )
+            node_results.append(result)
 
-        if result.output:
-            sep = _build_separator(node, result.similarity, preset.show_similarity_separator)
-            if sep:
-                output_parts.append(sep)
-            if preset.interlace_input_output and result.was_processed:
-                interlaced = f"**Original:**\n{node.content}\n\n**Processed:**\n{result.output}"
-                output_parts.append(interlaced)
-            else:
-                output_parts.append(result.output)
+            if result.output:
+                sep = _build_separator(node, result.similarity, preset.show_similarity_separator)
+                if sep:
+                    output_parts.append(sep)
+                if preset.interlace_input_output and result.was_processed:
+                    interlaced = f"**Original:**\n{node.content}\n\n**Processed:**\n{result.output}"
+                    output_parts.append(interlaced)
+                else:
+                    output_parts.append(result.output)
 
     results_text = "\n\n".join(output_parts)
 
@@ -613,6 +729,10 @@ def run_iter(
             or on_mismatch is not a known policy.
         CheckpointMismatchError: If on_mismatch is 'ask' and the progress file
             belongs to a different run.
+        FileNotFoundError: If image_handling is 'standalone_nodes' and a local
+            image does not exist. Relative paths are resolved against the input
+            file's folder, or the working directory for input_text.
+        urllib.error.URLError: If such an image is a URL that cannot be downloaded.
     """
     start = time.perf_counter()
     if config is None:
@@ -647,8 +767,10 @@ def run_iter(
     if checkpoint.resumed:
         logger.log_info(f"Resuming from {checkpoint.path}: {checkpoint.summary()}")
 
+    # Relative image paths are written relative to the document they appear in.
+    base_dir = Path(input_file).resolve().parent if input_text is None else Path.cwd()
     try:
-        proc_result = _run_phases(document_text, output_file, preset, config, checkpoint)
+        proc_result = _run_phases(document_text, output_file, preset, config, checkpoint, base_dir)
     except BaseException:
         logger.log_warning(f"Progress saved to {checkpoint.path}; run again to resume.")
         raise
@@ -665,6 +787,7 @@ def _run_phases(
     preset: Preset,
     config: AppConfig,
     checkpoint: Checkpoint,
+    base_dir: Path,
 ) -> ProcessingResult:
     """Run the three phases and write the outputs; the body of run_iter().
 
@@ -674,6 +797,7 @@ def _run_phases(
         preset: Active preset.
         config: Application configuration.
         checkpoint: The run's progress file.
+        base_dir: Directory relative image paths are resolved against.
 
     Returns:
         A ProcessingResult with all intermediate and final results.
@@ -684,7 +808,7 @@ def _run_phases(
     # --- Phase 2: Node Processing ---
     nodes_saved_before = len(checkpoint.nodes)
     node_results, results = _run_node_processing(
-        document_text, preset, config, preprocessed, checkpoint
+        document_text, preset, config, preprocessed, checkpoint, base_dir
     )
     if len(checkpoint.nodes) != nodes_saved_before:
         # Phase 3 consolidates the node results: once any node was redone, a

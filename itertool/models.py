@@ -34,11 +34,18 @@ class Preset:
             'report_unprocessed': pass headings through unchanged.
             'standalone_nodes': treat each heading as its own node.
             'merge_next': prepend heading text to the next text node.
-        non_text_handling: How to handle tables/code/images in Phase 2.
+        non_text_handling: How to handle tables and code blocks in Phase 2.
             'discard': skip non-text blocks entirely.
             'report_unprocessed': pass them through unchanged.
             'standalone_nodes': treat each as its own node.
             'part_of_section': include in the surrounding section text (section mode only).
+        image_handling: How to handle standalone image blocks in Phase 2.
+            'discard': skip images entirely.
+            'report_unprocessed': pass them through unchanged.
+            'standalone_nodes': send each image to the AI as its own node, with
+                the image file attached (local path, or a downloaded URL).
+            'part_of_section': include the image Markdown in the surrounding
+                section text, without attaching the file (section mode only).
         compute_similarity: Whether to compute cosine similarity per node.
         show_similarity_separator: Whether to show the §N separator with similarity score.
         postprocess_attach_input: Attach the original input doc to Phase 3 prompt.
@@ -62,6 +69,7 @@ class Preset:
     include_preprocessed_context: bool = False
     heading_handling: str = "report_unprocessed"
     non_text_handling: str = "report_unprocessed"
+    image_handling: str = "report_unprocessed"
     compute_similarity: bool = False
     show_similarity_separator: bool = True
     postprocess_attach_input: bool = False

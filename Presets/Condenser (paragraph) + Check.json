@@ -8,6 +8,7 @@
   "include_preprocessed_context": false,
   "heading_handling": "report_unprocessed",
   "non_text_handling": "report_unprocessed",
+  "image_handling": "report_unprocessed",
   "compute_similarity": true,
   "show_similarity_separator": false,
   "postprocess_attach_input": true,

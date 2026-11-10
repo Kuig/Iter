@@ -104,21 +104,30 @@ def fingerprint(document_text: str, preset: Preset, config: AppConfig) -> dict:
     }
 
 
-def node_keys(nodes: list[Node]) -> list[str]:
+def file_digest(path: Path) -> str:
+    """Hash a file's bytes, for keying a node that sends the file to the AI."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def node_keys(nodes: list[Node], extra: dict[int, str] | None = None) -> list[str]:
     """Key each node by its content, so edits elsewhere in the input keep it valid.
 
     Identical contents are told apart by their occurrence number.
 
     Args:
         nodes: The node list as it is sent to the AI, after the pre-passes.
+        extra: Further input a node sends to the AI besides its text, by
+            Node.index: the digest of an attached image, so that a changed
+            file invalidates the node even when its Markdown did not change.
 
     Returns:
         One key per node, in the same order.
     """
+    extra = extra or {}
     seen: dict[str, int] = {}
     keys = []
     for node in nodes:
-        digest = _digest(node.content)[:16]
+        digest = _digest(node.content + extra.get(node.index, ""))[:16]
         seen[digest] = seen.get(digest, 0) + 1
         keys.append(f"{digest}-{seen[digest]}")
     return keys

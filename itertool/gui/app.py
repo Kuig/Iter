@@ -56,6 +56,13 @@ _NON_TEXT_OPTIONS = {
     "part_of_section": "Include in section",
 }
 
+_IMAGE_OPTIONS = {
+    "report_unprocessed": "Pass through unchanged",
+    "discard": "Discard",
+    "standalone_nodes": "Treat as standalone nodes",
+    "part_of_section": "Include in section",
+}
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _list_presets() -> list[str]:
@@ -218,6 +225,7 @@ def _init_state() -> None:
         "include_preprocessed_context": False,
         "heading_handling": "report_unprocessed",
         "non_text_handling": "report_unprocessed",
+        "image_handling": "report_unprocessed",
         "compute_similarity": False,
         "show_similarity_separator": True,
         "postprocess_attach_input": False,
@@ -233,6 +241,7 @@ def _init_state() -> None:
         "radio_node_mode": "🔹 Paragraph",
         "sel_heading_handling": "Pass through unchanged",
         "sel_non_text_handling": "Pass through unchanged",
+        "sel_image_handling": "Pass through unchanged",
         # Results
         "result_preprocessed": "",
         "result_processed": "",
@@ -277,6 +286,11 @@ def _load_preset_into_state(preset: Preset) -> None:
         preset.non_text_handling, list(_NON_TEXT_OPTIONS.values())[0]
     )
 
+    st.session_state.image_handling = preset.image_handling
+    st.session_state.sel_image_handling = _IMAGE_OPTIONS.get(
+        preset.image_handling, list(_IMAGE_OPTIONS.values())[0]
+    )
+
     # Phase 3 Options
     st.session_state.postprocess_attach_input = preset.postprocess_attach_input
     st.session_state.postprocess_attach_preprocessed = preset.postprocess_attach_preprocessed
@@ -303,6 +317,7 @@ def _state_to_preset() -> Preset:
         include_preprocessed_context=st.session_state.include_preprocessed_context,
         heading_handling=st.session_state.heading_handling,
         non_text_handling=st.session_state.non_text_handling,
+        image_handling=st.session_state.image_handling,
         compute_similarity=st.session_state.compute_similarity,
         show_similarity_separator=st.session_state.show_similarity_separator,
         postprocess_attach_input=st.session_state.postprocess_attach_input,
@@ -570,21 +585,27 @@ with st.expander("**Phase 2 - Node Processing** *(core)*", expanded=True):
         )
         st.session_state.heading_handling = heading_keys[heading_labels.index(selected_heading)]
 
-        # part_of_section absorbs a non-text block into the section before it,
-        # so it is meaningless in paragraph mode, where there are no sections.
-        non_text_options = dict(_NON_TEXT_OPTIONS)
-        if st.session_state.node_mode != "section":
-            non_text_options.pop("part_of_section")
-        non_text_labels = list(non_text_options.values())
-        non_text_keys = list(non_text_options.keys())
-        if st.session_state.get("sel_non_text_handling") not in non_text_labels:
-            st.session_state.sel_non_text_handling = non_text_options["report_unprocessed"]
-        selected_non_text = st.selectbox(
-            "Non-text handling (tables, code, images)",
-            options=non_text_labels,
-            key="sel_non_text_handling",
-        )
-        st.session_state.non_text_handling = non_text_keys[non_text_labels.index(selected_non_text)]
+        # part_of_section absorbs a block into the section before it, so it is
+        # meaningless in paragraph mode, where there are no sections.
+        for field_name, all_options, label, help_text in (
+            ("non_text_handling", _NON_TEXT_OPTIONS, "Non-text handling (tables, code)", None),
+            (
+                "image_handling", _IMAGE_OPTIONS, "Image handling",
+                "'Treat as standalone nodes' sends the image file to the model, "
+                "resolved from the input file's folder or downloaded from its URL. "
+                "'Include in section' adds only the Markdown text to the section.",
+            ),
+        ):
+            options = dict(all_options)
+            if st.session_state.node_mode != "section":
+                options.pop("part_of_section")
+            labels = list(options.values())
+            keys = list(options.keys())
+            sel_key = f"sel_{field_name}"
+            if st.session_state.get(sel_key) not in labels:
+                st.session_state[sel_key] = options["report_unprocessed"]
+            selected = st.selectbox(label, options=labels, key=sel_key, help=help_text)
+            st.session_state[field_name] = keys[labels.index(selected)]
 
 # ── Phase 3: Postprocessing ───────────────────────────────────────────────────
 

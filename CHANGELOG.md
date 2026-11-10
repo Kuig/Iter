@@ -12,9 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Open with Iter** in the Explorer context menu of `.md` and `.markdown` files: it opens the
   GUI with the file already set as the input. `iter gui` takes an optional input file for the
   same purpose, and so does `Windows Integration/launch_gui.bat`.
+- `image_handling` preset field, with an **Image handling** menu in the GUI: images are no longer
+  governed by `non_text_handling`. With `standalone_nodes` the image file is attached to the AI
+  call: a relative path is resolved from the input file's folder, an `http(s)` URL is downloaded
+  first, and a missing image stops the run at the start of Phase 2. With `compute_similarity`,
+  the image is embedded together with its Markdown on the original side. A changed image file is
+  sent again when a run resumes.
 
 ### Changed
 
+- `non_text_handling` now covers only tables and code blocks. Presets that relied on it for
+  images get the `image_handling` default, `report_unprocessed`.
+- A block holding only a link, `[text](url)`, is now text instead of an image node.
 - Re-merging `register.reg` replaces the whole preset submenu, so the entries of deleted or
   renamed presets disappear. The script stops with an error above 16 presets, the most Explorer
   shows in a submenu.

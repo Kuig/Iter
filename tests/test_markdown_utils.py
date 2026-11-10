@@ -7,6 +7,7 @@ from itertool.markdown_utils import (
     _split_into_raw_blocks,
     classify_block,
     clean_ai_response,
+    image_source,
     parse_into_paragraphs,
     parse_into_sections,
 )
@@ -53,6 +54,32 @@ class TestClassifyBlock(unittest.TestCase):
 
     def test_text(self):
         self.assertEqual(classify_block("Just a paragraph."), "text")
+
+    def test_link_alone_is_text(self):
+        self.assertEqual(classify_block("[docs](https://example.com)"), "text")
+
+    def test_two_images_in_one_block_are_text(self):
+        self.assertEqual(classify_block("![a](a.png) and ![b](b.png)"), "text")
+
+
+class TestImageSource(unittest.TestCase):
+    """The source is extracted the way Markdown writes it."""
+
+    def test_plain(self):
+        self.assertEqual(image_source("![alt](pics/a.png)"), "pics/a.png")
+
+    def test_title_is_dropped(self):
+        self.assertEqual(image_source('![alt](a.png "A title")'), "a.png")
+
+    def test_angle_brackets_allow_spaces(self):
+        self.assertEqual(image_source("![alt](<my pics/a b.png> 'T')"), "my pics/a b.png")
+
+    def test_url(self):
+        self.assertEqual(image_source("![](https://example.com/a.png)"), "https://example.com/a.png")
+
+    def test_not_an_image(self):
+        with self.assertRaises(ValueError):
+            image_source("[docs](a.md)")
 
 
 class TestCleanAiResponse(unittest.TestCase):

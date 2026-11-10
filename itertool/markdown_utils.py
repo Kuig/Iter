@@ -51,16 +51,45 @@ def is_code_block(block: str) -> bool:
     return block.strip().startswith("```")
 
 
-def is_image_or_link_only(block: str) -> bool:
-    """Return True if the block contains only a Markdown image or standalone link.
+_IMAGE_RE = re.compile(r"^!\[[^\]]*\]\(([^)]*)\)$")
+
+
+def is_image_only(block: str) -> bool:
+    """Return True if the block contains only a Markdown image.
+
+    A block holding only a link (no leading '!') is ordinary text.
 
     Args:
         block: A Markdown text block.
 
     Returns:
-        True if the block matches the pattern for a standalone image/link.
+        True if the block matches the pattern for a standalone image.
     """
-    return bool(re.match(r"^!?\[.*?\]\(.*?\)$", block.strip()))
+    return bool(_IMAGE_RE.match(block.strip()))
+
+
+def image_source(block: str) -> str:
+    """Return the source of a standalone image block.
+
+    Handles the angle-bracket form for sources with spaces and drops an
+    optional quoted title: '![a](<my pic.png> "Title")' gives 'my pic.png'.
+
+    Args:
+        block: A block for which is_image_only() is True.
+
+    Returns:
+        The image path or URL, as written in the document.
+
+    Raises:
+        ValueError: If the block is not a standalone image.
+    """
+    match = _IMAGE_RE.match(block.strip())
+    if not match:
+        raise ValueError(f"Not a standalone image block: {block!r}")
+    target = match.group(1).strip()
+    if target.startswith("<"):
+        return target[1:target.index(">")] if ">" in target else target[1:]
+    return re.sub(r"""\s+["'].*$""", "", target)
 
 
 def classify_block(block: str) -> str:
@@ -78,7 +107,7 @@ def classify_block(block: str) -> str:
         return "table"
     if is_code_block(block):
         return "code"
-    if is_image_or_link_only(block):
+    if is_image_only(block):
         return "image"
     return "text"
 

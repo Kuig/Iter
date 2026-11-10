@@ -4,7 +4,10 @@ Every AI call is stubbed: no test in this suite may reach call_ai.
 """
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import itertool.logger as logger
 import itertool.processor as processor
@@ -25,18 +28,20 @@ def tearDownModule():
 
 
 class _StubAi:
-    """Replaces _call_ai for the duration of a test and records its prompts."""
+    """Replaces _call_ai for the duration of a test and records its prompts and files."""
 
     def __init__(self, elapsed: float = 0.0):
         self.prompts: list[str] = []
+        self.files: list[Path | None] = []
         self.elapsed = elapsed
         self._original = None
 
     def __enter__(self):
         self._original = processor._call_ai
 
-        def fake(prompt, config, preset, messages=None):
+        def fake(prompt, config, preset, messages=None, file_path=None):
             self.prompts.append(prompt)
+            self.files.append(file_path)
             return processor._AiReply(text="[AI]", elapsed=self.elapsed)
 
         processor._call_ai = fake
@@ -68,13 +73,15 @@ class _StubEmbedding:
     def __init__(self, failing: bool):
         self.failing = failing
         self.calls = 0
+        self.files: list[Path | None] = []
         self._original = None
 
     def __enter__(self):
         self._original = processor._get_embedding
 
-        def fake(text, config):
+        def fake(text, config, file_path=None):
             self.calls += 1
+            self.files.append(file_path)
             if self.failing:
                 raise ConnectionError("embedding server down")
             return [1.0, 0.0]
@@ -343,6 +350,118 @@ class TestOtherHandlingRules(unittest.TestCase):
         heading = [r for r in results if r.node.node_type == "heading"][0]
         self.assertTrue(heading.was_processed)
         self.assertEqual(heading.output, "[AI]")
+
+
+class _FakeResponse:
+    """What urllib.request.urlopen returns, reduced to what _fetch_image reads."""
+
+    def __init__(self, data: bytes, content_type: str):
+        self._data = data
+        self.headers = self
+        self._content_type = content_type
+
+    def get_content_type(self):
+        return self._content_type
+
+    def read(self):
+        return self._data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class TestImageHandling(unittest.TestCase):
+    """Images follow image_handling, and standalone_nodes attaches the file."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        (self.dir / "pics").mkdir()
+        self.image = self.dir / "pics" / "chart.png"
+        self.image.write_bytes(b"png")
+
+    def _run(self, doc: str, **preset_fields):
+        preset = Preset(node_prompt="p", **preset_fields)
+        with _StubAi() as ai:
+            results, _ = processor._run_node_processing(
+                doc, preset, AppConfig(), "", base_dir=self.dir
+            )
+        return results, ai
+
+    def test_standalone_attaches_the_file_resolved_from_the_document_folder(self):
+        results, ai = self._run("Text.\n\n![c](pics/chart.png)\n", image_handling="standalone_nodes")
+        self.assertEqual(ai.files, [None, self.dir / "pics" / "chart.png"])
+        self.assertTrue(results[1].was_processed)
+
+    def test_source_with_spaces_and_title(self):
+        spaced = self.dir / "pics" / "my chart.png"
+        spaced.write_bytes(b"png")
+        _, ai = self._run('![c](<pics/my chart.png> "Title")\n', image_handling="standalone_nodes")
+        self.assertEqual(ai.files, [spaced])
+
+    def test_missing_image_stops_before_any_node_call(self):
+        with self.assertRaises(FileNotFoundError):
+            self._run("Text.\n\n![c](pics/missing.png)\n", image_handling="standalone_nodes")
+
+    def test_url_is_downloaded_with_an_image_extension(self):
+        seen: list[Path] = []
+
+        def fake_call(prompt, config, preset, messages=None, file_path=None):
+            seen.append(file_path)
+            self.assertEqual(file_path.read_bytes(), b"remote")
+            return processor._AiReply(text="[AI]", elapsed=0.0)
+
+        response = _FakeResponse(b"remote", "image/jpeg")
+        preset = Preset(node_prompt="p", image_handling="standalone_nodes")
+        with patch.object(processor.urllib.request, "urlopen", return_value=response), \
+                patch.object(processor, "_call_ai", fake_call):
+            processor._run_node_processing(
+                "![c](https://example.com/render?id=1)\n", preset, AppConfig(), ""
+            )
+        self.assertEqual(len(seen), 1)
+        self.assertIn(seen[0].suffix, (".jpg", ".jpeg", ".jpe"))
+        self.assertFalse(seen[0].exists())
+
+    def test_non_text_handling_does_not_govern_images(self):
+        results, ai = self._run(
+            "| a |\n| - |\n\n![c](pics/chart.png)\n",
+            non_text_handling="standalone_nodes", image_handling="report_unprocessed",
+        )
+        image = [r for r in results if r.node.node_type == "image"][0]
+        self.assertFalse(image.was_processed)
+        self.assertEqual(image.output, "![c](pics/chart.png)")
+        self.assertEqual(ai.files, [None])
+
+    def test_discard_drops_the_image(self):
+        results, ai = self._run("![c](pics/chart.png)\n", image_handling="discard")
+        self.assertEqual(results[0].output, "")
+        self.assertEqual(ai.prompts, [])
+
+    def test_part_of_section_absorbs_only_what_asks_for_it(self):
+        results, ai = self._run(
+            "Text.\n\n![c](pics/chart.png)\n\n| a |\n| - |\n",
+            node_mode="section", image_handling="part_of_section",
+        )
+        self.assertIn("![c](pics/chart.png)", results[0].node.content)
+        self.assertNotIn("| a |", results[0].node.content)
+        self.assertEqual(results[1].node.node_type, "table")
+        self.assertEqual(ai.files, [None])
+
+    def test_image_part_of_section_warns_in_paragraph_mode(self):
+        with _CaptureWarnings() as warnings:
+            self._run("Text.\n", image_handling="part_of_section")
+        self.assertEqual(len(warnings.messages), 1)
+        self.assertIn("image_handling", warnings.messages[0])
+
+    def test_similarity_embeds_the_image_with_the_original(self):
+        preset = Preset(node_prompt="p", image_handling="standalone_nodes", compute_similarity=True)
+        with _StubAi(), _StubEmbedding(failing=False) as embedding:
+            processor._run_node_processing(
+                "![c](pics/chart.png)\n", preset, AppConfig(), "", base_dir=self.dir
+            )
+        self.assertEqual(embedding.files, [self.image, None])
 
 
 class TestPhaseSkipping(unittest.TestCase):

@@ -115,7 +115,8 @@ Each block becomes exactly one `Node`. Block type is classified with:
 - `is_header()` - starts with `#`
 - `is_table()` - first two lines contain `|` and `-`
 - `is_code_block()` - starts with ` ``` `
-- `is_image_or_link_only()` - matches `!?[…](…)` alone on a line
+- `is_image_only()` - matches a single `![…](…)` alone on a line; a block holding only a
+  link is text. `image_source()` extracts its path or URL for `image_handling`.
 
 #### Section mode
 Structural blocks (headings, code, tables, images) flush the current text buffer
@@ -149,12 +150,16 @@ document_text
 │  pre-pass: apply merge_next     │
 │            / part_of_section    │
 │                                 │
+│  resolve image files            │  (if image_handling is standalone_nodes)
+│                                 │
 │  for each node:                 │
-│    apply heading/non-text rule  │
+│    apply heading/non-text/image │
+│    rule                         │
 │    → discard / passthrough      │
 │    → call_ai(node_prompt        │
 │               + node.content,   │
 │               messages=[preproc]│  (if include_preprocessed_context)
+│               file_path=image   │  (image nodes only)
 │              )                  │
 │    → optional cosine similarity │
 │    → append to results          │
@@ -301,14 +306,16 @@ response = call_ai(
     prompt=...,
     system_prompt=...,
     messages=...,        # optional context injection
+    file_path=...,       # the image file, for image nodes
     temperature=config.temperature,
 )
 
 # Embedding for cosine similarity
 vector = get_embedding(
-    provider=config.provider,
+    provider=config.embedding_provider,
     model=config.embedding_model,
     text=node.content,
+    file_path=...,       # the image file, for the original side of an image node
 )
 ```
 
@@ -369,6 +376,7 @@ call may write there. Library callers that handle their own output can select
 │    [name input]    │    ☐ Show §N separator                       │
 │                    │    Heading handling:    [dropdown]           │
 │                    │    Non-text handling:   [dropdown]           │
+│                    │    Image handling:      [dropdown]           │
 │                    │                                              │
 │                    │  ▸ Phase 3 - Postprocessing (expander)       │
 │                    │    [text area for postprocessing_prompt]     │

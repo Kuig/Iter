@@ -15,7 +15,8 @@ Loaded from / saved to `Presets/<name>.json`. Holds the **task configuration**:
 | `postprocessing_prompt` | str | Phase 3 prompt (empty = skip) |
 | `include_preprocessed_context` | bool | Inject Phase 1 result as prior assistant message in Phase 2 calls |
 | `heading_handling` | see below | How to treat `#` heading blocks in Phase 2 |
-| `non_text_handling` | see below | How to treat tables / code / images in Phase 2 |
+| `non_text_handling` | see below | How to treat tables / code blocks in Phase 2 |
+| `image_handling` | see below | How to treat standalone image blocks in Phase 2 |
 | `compute_similarity` | bool | Compute cosine similarity per node |
 | `show_similarity_separator` | bool | Insert `# §N - heading - Cosine similarity: score` between results |
 | `postprocess_attach_input` | bool | Append original document to Phase 3 prompt |
@@ -38,7 +39,7 @@ Loaded from / saved to `Presets/<name>.json`. Holds the **task configuration**:
 | `"standalone_nodes"` | Send heading text to the AI as its own node |
 | `"merge_next"` | Prepend heading to the next text block before sending to AI |
 
-**`non_text_handling` values** (tables, code blocks, images):
+**`non_text_handling` values** (tables, code blocks):
 
 | Value | Behaviour |
 |---|---|
@@ -46,6 +47,26 @@ Loaded from / saved to `Presets/<name>.json`. Holds the **task configuration**:
 | `"discard"` | Drop the block entirely |
 | `"standalone_nodes"` | Send block to the AI as its own node |
 | `"part_of_section"` | Absorb block into the surrounding text section *(section mode only)* |
+
+**`image_handling` values** (a block holding only `![alt](src)`; a block holding only a link is text):
+
+| Value | Behaviour |
+|---|---|
+| `"report_unprocessed"` | Pass the image Markdown through unchanged *(default)* |
+| `"discard"` | Drop the image entirely |
+| `"standalone_nodes"` | Send the image to the AI as its own node: the prompt carries the Markdown, and the image file is attached |
+| `"part_of_section"` | Absorb the image Markdown into the surrounding text section, without attaching the file *(section mode only)* |
+
+With `"standalone_nodes"`, `src` is resolved before any node is sent:
+
+- A relative path is resolved against the input file's folder, or the working directory when the input is raw text.
+- An `http(s)` URL is downloaded to a temporary folder, deleted when Phase 2 ends.
+- A missing file or a failed download stops the run with an error at the start of Phase 2.
+
+The model has to accept images; the attachment is passed to it as is. With `compute_similarity`, the
+original side of the comparison embeds the image together with its Markdown, so it needs a multimodal
+embedding model. The image's bytes are part of the node's progress-file key: a changed image is sent
+again on resume.
 
 ## Adding a field
 

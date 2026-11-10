@@ -25,6 +25,7 @@ class TestPresetRoundTrip(unittest.TestCase):
             postprocessing_prompt="Polish.",
             heading_handling="merge_next",
             non_text_handling="part_of_section",
+            image_handling="standalone_nodes",
             compute_similarity=True,
         )
         path = self.dir / "preset.json"
