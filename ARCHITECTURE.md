@@ -41,6 +41,7 @@ Iter/
 │   ├── __main__.py            # CLI entry point  →  iter run / mcp / gui
 │   ├── checkpoint.py          # Progress file that makes runs resumable
 │   ├── config.py              # AppConfig dataclass  (config.json loader)
+│   ├── images.py              # Image node files: local lookup, URL download
 │   ├── logger.py              # Dual-backend logger (console + Streamlit)
 │   ├── markdown_utils.py      # Markdown parsing and block classification
 │   ├── models.py              # Preset, Node, NodeResult, ProcessingResult, cosine_similarity
@@ -150,7 +151,7 @@ document_text
 │  pre-pass: apply merge_next     │
 │            / part_of_section    │
 │                                 │
-│  resolve image files            │  (if image_handling is standalone_nodes)
+│  images.resolve_images()        │  (if image_handling is standalone_nodes)
 │                                 │
 │  for each node:                 │
 │    apply heading/non-text/image │

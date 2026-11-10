@@ -7,11 +7,8 @@ Implements the three-phase pipeline:
 """
 from __future__ import annotations
 
-import mimetypes
 import tempfile
 import time
-import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +17,7 @@ from unified_ai_client import get_embedding as _get_embedding_vec
 
 from itertool.checkpoint import Checkpoint, file_digest, fingerprint, node_keys, progress_path
 from itertool.config import AppConfig
+from itertool.images import resolve_images
 from itertool.models import (
     Node,
     NodeResult,
@@ -32,7 +30,6 @@ from itertool.markdown_utils import (
     parse_into_paragraphs,
     parse_into_sections,
     clean_ai_response,
-    image_source,
 )
 import itertool.logger as logger
 
@@ -279,69 +276,6 @@ def _handling_for(node: Node, preset: Preset) -> str:
     return preset.non_text_handling
 
 
-def _fetch_image(url: str, dest_dir: Path, index: int) -> Path:
-    """Download a remote image into dest_dir.
-
-    The file keeps an image extension, taken from the URL path or else from the
-    Content-Type, because UnifiedAiClient decides how to send a file by its
-    extension.
-
-    Args:
-        url: http(s) URL of the image.
-        dest_dir: Directory the file is written to.
-        index: Node.index of the image, used to name the file.
-
-    Returns:
-        Path of the downloaded file.
-
-    Raises:
-        urllib.error.URLError: If the download fails.
-    """
-    with urllib.request.urlopen(url, timeout=60) as response:
-        data = response.read()
-        content_type = response.headers.get_content_type()
-    suffix = Path(urllib.parse.urlparse(url).path).suffix
-    if not mimetypes.guess_type(f"x{suffix}")[0]:
-        suffix = mimetypes.guess_extension(content_type) or ""
-    path = dest_dir / f"image-{index}{suffix}"
-    path.write_bytes(data)
-    return path
-
-
-def _resolve_images(nodes: list[Node], base_dir: Path, dest_dir: Path) -> dict[int, Path]:
-    """Locate the file of every image node, downloading remote ones.
-
-    Runs before any node is sent to the AI, so a missing image stops the run
-    before it spends calls on the nodes in front of it.
-
-    Args:
-        nodes: The node list after the pre-passes.
-        base_dir: Directory relative image paths are resolved against.
-        dest_dir: Directory downloaded images are written to.
-
-    Returns:
-        Image file paths, by Node.index.
-
-    Raises:
-        FileNotFoundError: If a local image does not exist.
-        urllib.error.URLError: If a remote image cannot be downloaded.
-    """
-    paths: dict[int, Path] = {}
-    for node in nodes:
-        if node.node_type != "image":
-            continue
-        src = image_source(node.content)
-        if urllib.parse.urlparse(src).scheme in ("http", "https"):
-            logger.log_action(f"Downloading image of node §{node.index}: {src}")
-            paths[node.index] = _fetch_image(src, dest_dir, node.index)
-            continue
-        path = base_dir / urllib.parse.unquote(src)
-        if not path.is_file():
-            raise FileNotFoundError(f"Image of node §{node.index} not found: {path}")
-        paths[node.index] = path
-    return paths
-
-
 def _process_node(
     node: Node,
     preset: Preset,
@@ -446,6 +380,100 @@ def _process_node(
     return result
 
 
+def _merge_headings(nodes: list[Node], preset: Preset) -> list[Node]:
+    """Pre-pass for merge_next: merge each heading into the text node that follows it.
+
+    A heading with no text node right after it is left alone; _process_node
+    passes it through.
+
+    Args:
+        nodes: The parsed node list.
+        preset: Active preset (reads heading_handling).
+
+    Returns:
+        The node list with each merged pair replaced by one text node.
+    """
+    if preset.heading_handling != "merge_next":
+        return nodes
+    merged: list[Node] = []
+    i = 0
+    while i < len(nodes):
+        node = nodes[i]
+        if node.node_type == "heading" and i + 1 < len(nodes) and nodes[i + 1].node_type == "text":
+            merged.append(Node(
+                index=node.index,
+                node_type="text",
+                content=f"{node.content}\n\n{nodes[i + 1].content}",
+                heading_prefix=node.content.strip(),
+            ))
+            i += 2
+        else:
+            merged.append(node)
+            i += 1
+    return merged
+
+
+def _absorb_into_sections(nodes: list[Node], preset: Preset) -> list[Node]:
+    """Pre-pass for part_of_section: absorb the blocks that follow a section into it.
+
+    Only blocks whose own handling field asks for part_of_section are absorbed,
+    and only in section mode. A block with no section before it is left alone;
+    _process_node passes it through.
+
+    Args:
+        nodes: The node list after _merge_headings().
+        preset: Active preset (reads node_mode and the handling fields).
+
+    Returns:
+        The node list with absorbed blocks folded into their section.
+    """
+    if preset.node_mode != "section" or "part_of_section" not in (
+        preset.non_text_handling, preset.image_handling
+    ):
+        return nodes
+    assembled: list[Node] = []
+    j = 0
+    while j < len(nodes):
+        node = nodes[j]
+        if node.node_type == "text":
+            combined_content = node.content
+            while (
+                j + 1 < len(nodes)
+                and nodes[j + 1].node_type not in ("text", "heading")
+                and _handling_for(nodes[j + 1], preset) == "part_of_section"
+            ):
+                j += 1
+                combined_content += f"\n\n{nodes[j].content}"
+            assembled.append(Node(
+                index=node.index,
+                node_type="text",
+                content=combined_content,
+                heading_prefix=node.heading_prefix,
+            ))
+        else:
+            assembled.append(node)
+        j += 1
+    return assembled
+
+
+def _log_phase_two_stats(node_results: list[NodeResult]) -> None:
+    """Log the Phase 2 summary: sizes, ratio and AI time of the nodes sent to the AI."""
+    processed = [r for r in node_results if r.was_processed]
+    if not processed:
+        logger.log_success("Node processing complete.")
+        return
+    total_in = sum(r.input_chars for r in processed)
+    total_out = sum(r.output_chars for r in processed)
+    ratio = total_out / total_in if total_in > 0 else 0.0
+    total_time = sum(r.elapsed for r in processed)
+    average_time = total_time / len(processed)
+    logger.log_success(
+        f"Node processing complete. "
+        f"Total Phase 2 stats: in: {total_in}, out: {total_out} chars | ratio (out/in): {ratio:.3f} | "
+        f"AI time: {_format_duration(total_time)} (avg {_format_duration(average_time)} per node)"
+    )
+
+
 def _run_node_processing(
     document_text: str,
     preset: Preset,
@@ -458,9 +486,8 @@ def _run_node_processing(
 
     Skipped if preset.node_prompt is empty.
 
-    Applies merge_next heading logic by looking ahead in the node list.
-    Applies part_of_section non-text and image handling in section mode by
-    re-assembling those blocks into the surrounding section text before AI call.
+    Runs the merge_next and part_of_section pre-passes, then locates the image
+    files when image_handling attaches them, then sends each node.
 
     Args:
         document_text: Full input document text.
@@ -493,74 +520,22 @@ def _run_node_processing(
                 )
 
     nodes = _resolve_nodes(document_text, preset)
+    nodes = _merge_headings(nodes, preset)
+    nodes = _absorb_into_sections(nodes, preset)
 
     node_results: list[NodeResult] = []
     output_parts: list[str] = []
-
-    # Pre-pass: merge each heading into the text node that follows it.
-    merged_nodes: list[Node] = []
-    i = 0
-    while i < len(nodes):
-        node = nodes[i]
-        if (
-            node.node_type == "heading"
-            and preset.heading_handling == "merge_next"
-            and i + 1 < len(nodes)
-            and nodes[i + 1].node_type == "text"
-        ):
-            next_node = nodes[i + 1]
-            merged_content = f"{node.content}\n\n{next_node.content}"
-            merged = Node(
-                index=node.index,
-                node_type="text",
-                content=merged_content,
-                heading_prefix=node.content.strip(),
-            )
-            merged_nodes.append(merged)
-            i += 2
-        else:
-            merged_nodes.append(node)
-            i += 1
-
-    # Pre-pass: absorb the non-text blocks that follow a section into it.
-    if preset.node_mode == "section" and "part_of_section" in (
-        preset.non_text_handling, preset.image_handling
-    ):
-        assembled: list[Node] = []
-        j = 0
-        while j < len(merged_nodes):
-            node = merged_nodes[j]
-            if node.node_type == "text":
-                combined_content = node.content
-                while (
-                    j + 1 < len(merged_nodes)
-                    and merged_nodes[j + 1].node_type not in ("text", "heading")
-                    and _handling_for(merged_nodes[j + 1], preset) == "part_of_section"
-                ):
-                    j += 1
-                    combined_content += f"\n\n{merged_nodes[j].content}"
-                assembled.append(Node(
-                    index=node.index,
-                    node_type="text",
-                    content=combined_content,
-                    heading_prefix=node.heading_prefix,
-                ))
-            else:
-                assembled.append(node)
-            j += 1
-        merged_nodes = assembled
-
     # Counted after both pre-passes: what they merged is one node, not two.
-    total = len(merged_nodes)
+    total = len(nodes)
     logger.log_action(f"Found {total} nodes. Processing...")
     state = _RunState(similarity_enabled=preset.compute_similarity, checkpoint=checkpoint)
     with tempfile.TemporaryDirectory(prefix="iter-images-") as download_dir:
         images: dict[int, Path] = {}
         if preset.image_handling == "standalone_nodes":
-            images = _resolve_images(merged_nodes, base_dir or Path.cwd(), Path(download_dir))
+            images = resolve_images(nodes, base_dir or Path.cwd(), Path(download_dir))
         image_digests = {index: file_digest(path) for index, path in images.items()}
-        keys = node_keys(merged_nodes, image_digests)
-        for position, (node, key) in enumerate(zip(merged_nodes, keys), 1):
+        keys = node_keys(nodes, image_digests)
+        for position, (node, key) in enumerate(zip(nodes, keys), 1):
             logger.log_action(f"Node {position}/{total} (§{node.index}) [{node.node_type}]")
             result = _process_node(
                 node, preset, config, preprocessed, state, key, images.get(node.index)
@@ -577,24 +552,8 @@ def _run_node_processing(
                 else:
                     output_parts.append(result.output)
 
-    results_text = "\n\n".join(output_parts)
-
-    processed_results = [r for r in node_results if r.was_processed]
-    if processed_results:
-        total_in = sum(r.input_chars for r in processed_results)
-        total_out = sum(r.output_chars for r in processed_results)
-        ratio = total_out / total_in if total_in > 0 else 0.0
-        total_time = sum(r.elapsed for r in processed_results)
-        average_time = total_time / len(processed_results)
-        logger.log_success(
-            f"Node processing complete. "
-            f"Total Phase 2 stats: in: {total_in}, out: {total_out} chars | ratio (out/in): {ratio:.3f} | "
-            f"AI time: {_format_duration(total_time)} (avg {_format_duration(average_time)} per node)"
-        )
-    else:
-        logger.log_success("Node processing complete.")
-
-    return node_results, results_text
+    _log_phase_two_stats(node_results)
+    return node_results, "\n\n".join(output_parts)
 
 
 # ── Phase 3: Postprocessing ───────────────────────────────────────────────────

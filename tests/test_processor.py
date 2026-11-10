@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import itertool.images as images
 import itertool.logger as logger
 import itertool.processor as processor
 from itertool.config import AppConfig
@@ -352,29 +353,11 @@ class TestOtherHandlingRules(unittest.TestCase):
         self.assertEqual(heading.output, "[AI]")
 
 
-class _FakeResponse:
-    """What urllib.request.urlopen returns, reduced to what _fetch_image reads."""
-
-    def __init__(self, data: bytes, content_type: str):
-        self._data = data
-        self.headers = self
-        self._content_type = content_type
-
-    def get_content_type(self):
-        return self._content_type
-
-    def read(self):
-        return self._data
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-
 class TestImageHandling(unittest.TestCase):
-    """Images follow image_handling, and standalone_nodes attaches the file."""
+    """Images follow image_handling, and standalone_nodes attaches the file.
+
+    How a source is resolved to a file is tested in test_images.
+    """
 
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
@@ -395,33 +378,35 @@ class TestImageHandling(unittest.TestCase):
         self.assertEqual(ai.files, [None, self.dir / "pics" / "chart.png"])
         self.assertTrue(results[1].was_processed)
 
-    def test_source_with_spaces_and_title(self):
-        spaced = self.dir / "pics" / "my chart.png"
-        spaced.write_bytes(b"png")
-        _, ai = self._run('![c](<pics/my chart.png> "Title")\n', image_handling="standalone_nodes")
-        self.assertEqual(ai.files, [spaced])
-
     def test_missing_image_stops_before_any_node_call(self):
-        with self.assertRaises(FileNotFoundError):
-            self._run("Text.\n\n![c](pics/missing.png)\n", image_handling="standalone_nodes")
+        with _StubAi() as ai, self.assertRaises(FileNotFoundError):
+            processor._run_node_processing(
+                "Text.\n\n![c](pics/missing.png)\n",
+                Preset(node_prompt="p", image_handling="standalone_nodes"),
+                AppConfig(), "", base_dir=self.dir,
+            )
+        self.assertEqual(ai.prompts, [])
 
-    def test_url_is_downloaded_with_an_image_extension(self):
+    def test_downloaded_image_is_attached_then_deleted(self):
         seen: list[Path] = []
+
+        def fake_fetch(url, dest_dir, index):
+            path = dest_dir / "image.jpg"
+            path.write_bytes(b"remote")
+            return path
 
         def fake_call(prompt, config, preset, messages=None, file_path=None):
             seen.append(file_path)
             self.assertEqual(file_path.read_bytes(), b"remote")
             return processor._AiReply(text="[AI]", elapsed=0.0)
 
-        response = _FakeResponse(b"remote", "image/jpeg")
         preset = Preset(node_prompt="p", image_handling="standalone_nodes")
-        with patch.object(processor.urllib.request, "urlopen", return_value=response), \
+        with patch.object(images, "fetch_image", fake_fetch), \
                 patch.object(processor, "_call_ai", fake_call):
             processor._run_node_processing(
-                "![c](https://example.com/render?id=1)\n", preset, AppConfig(), ""
+                "![c](https://example.com/chart.jpg)\n", preset, AppConfig(), ""
             )
         self.assertEqual(len(seen), 1)
-        self.assertIn(seen[0].suffix, (".jpg", ".jpeg", ".jpe"))
         self.assertFalse(seen[0].exists())
 
     def test_non_text_handling_does_not_govern_images(self):
