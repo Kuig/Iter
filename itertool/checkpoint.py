@@ -1,7 +1,7 @@
 """Progress file that makes an interrupted Iter run resumable.
 
 Every completed AI call is appended to a JSON Lines file as soon as it returns.
-A later run on the same document finds the file, restores what was done and
+A later run on the same input finds the file, restores what was done and
 calls the AI only for the rest. The file is deleted once the run has written
 all of its outputs.
 """
@@ -15,12 +15,12 @@ from pathlib import Path
 
 import itertool.logger as logger
 from itertool.config import AppConfig
-from itertool.models import Node, NodeResult, Preset
+from itertool.models import Corpus, Node, NodeResult, Preset
 
 PROGRESS_SUFFIX = ".iter-progress.jsonl"
 MISMATCH_POLICIES = ("ask", "continue", "restart")
 
-_FORMAT_VERSION = 1
+_FORMAT_VERSION = 2
 
 # Preset fields that only shape how saved results are assembled into the output.
 # Changing them does not invalidate any AI call, so they stay out of the fingerprint.
@@ -33,11 +33,12 @@ _OUTPUT_ONLY_FIELDS = frozenset({
     "save_preprocessed_separately",
     "save_postprocessed_separately",
     "interlace_input_output",
+    "output_layout",
 })
 
 _FINGERPRINT_LABELS = {
-    "version": "progress file format",
     "input": "input document",
+    "context": "reference context",
     "preset": "preset",
     "model": "model settings",
 }
@@ -47,20 +48,29 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def text_key(text: str) -> str:
+    """Key a Phase 1 result by the document it was computed on.
+
+    A document edited between two runs then gets a new Phase 1, while an
+    unchanged one keeps its saved result, whichever file it is in.
+    """
+    return _digest(text)[:16]
+
+
 def progress_path(
     output_file: str | None,
-    input_file: str | None,
+    input_path: str | None,
     input_text: str | None,
 ) -> Path:
     """Decide where the progress file of a run lives.
 
-    Next to the output file when there is one, otherwise in the working
-    directory, named after the input and a short hash of it so that two inputs
-    with the same name do not share a file.
+    Next to the output when there is one (beside the folder, for a mirrored
+    output), otherwise in the working directory, named after the input and a
+    short hash of it so that two inputs with the same name do not share a file.
 
     Args:
-        output_file: Main output path of the run, if any.
-        input_file: Input document path, used when there is no output file.
+        output_file: Main output path of the run (file or folder), if any.
+        input_path: Input document or folder, used when there is no output.
         input_text: Raw input text, used when there is neither.
 
     Returns:
@@ -69,28 +79,31 @@ def progress_path(
     if output_file:
         out = Path(output_file)
         return out.with_name(out.name + PROGRESS_SUFFIX)
-    if input_file:
-        stem, seed = Path(input_file).stem, str(Path(input_file).resolve())
+    if input_path:
+        stem, seed = Path(input_path).stem, str(Path(input_path).resolve())
     else:
         stem, seed = "text", input_text or ""
     return Path.cwd() / f"{stem}-{_digest(seed)[:8]}{PROGRESS_SUFFIX}"
 
 
-def fingerprint(document_text: str, preset: Preset, config: AppConfig) -> dict:
+def fingerprint(corpus: Corpus, preset: Preset, config: AppConfig, context: str = "") -> dict:
     """Describe everything that determines the AI calls of a run.
 
     Args:
-        document_text: The input document.
+        corpus: The input: every file's name and text.
         preset: Active preset; output-only fields are left out.
         config: Application configuration; only the generation-relevant fields.
+        context: The reference context added to the system prompt, if any.
 
     Returns:
         A JSON-serialisable dict, compared key by key on resume.
     """
     preset_fields = {k: v for k, v in asdict(preset).items() if k not in _OUTPUT_ONLY_FIELDS}
+    files = [[source.name, source.text] for source in corpus.files]
     return {
         "version": _FORMAT_VERSION,
-        "input": _digest(document_text),
+        "input": _digest(json.dumps(files, ensure_ascii=False)),
+        "context": _digest(context),
         "preset": _digest(json.dumps(preset_fields, sort_keys=True)),
         "model": {
             "provider": config.provider,
@@ -155,8 +168,9 @@ class Checkpoint:
 
     Attributes:
         path: The progress file.
-        preprocessed: Saved Phase 1 output, or None.
-        postprocessed: Saved Phase 3 output, or None.
+        preprocessed: Saved Phase 1 outputs, by text_key() of their document.
+        postprocessed: Saved Phase 3 outputs, by source file name, or under
+            None for the single corpus-wide call.
         nodes: Saved Phase 2 records, by node key.
     """
 
@@ -177,8 +191,8 @@ class Checkpoint:
         if on_mismatch not in MISMATCH_POLICIES:
             raise ValueError(f"on_mismatch must be one of {', '.join(MISMATCH_POLICIES)}; got {on_mismatch!r}")
         self.path = Path(path)
-        self.preprocessed: str | None = None
-        self.postprocessed: str | None = None
+        self.preprocessed: dict[str, str] = {}
+        self.postprocessed: dict[str | None, str] = {}
         self.nodes: dict[str, dict] = {}
 
         records, intact = self._read()
@@ -188,6 +202,11 @@ class Checkpoint:
 
         header, body = records[0], records[1:]
         saved = header.get("fingerprint", {}) if header.get("type") == "header" else {}
+        if saved.get("version") != run_fingerprint["version"]:
+            # Records of another format cannot be read back: there is nothing to continue from.
+            logger.log_warning(f"Starting over: {self.path} was written by a different version of Iter.")
+            self._rewrite(run_fingerprint, [])
+            return
         differences = [
             label for key, label in _FINGERPRINT_LABELS.items()
             if saved.get(key) != run_fingerprint[key]
@@ -206,29 +225,30 @@ class Checkpoint:
     @property
     def resumed(self) -> bool:
         """Whether anything was restored from an earlier run."""
-        return bool(self.nodes) or self.preprocessed is not None or self.postprocessed is not None
+        return bool(self.nodes or self.preprocessed or self.postprocessed)
 
     def summary(self) -> str:
         """Describe what was restored, for the log."""
         parts = []
-        if self.preprocessed is not None:
-            parts.append("phase 1 done")
+        if self.preprocessed:
+            parts.append(f"phase 1: {len(self.preprocessed)} saved")
         if self.nodes:
             parts.append(f"{len(self.nodes)} nodes done")
-        if self.postprocessed is not None:
-            parts.append("phase 3 done")
+        if self.postprocessed:
+            parts.append(f"phase 3: {len(self.postprocessed)} saved")
         return ", ".join(parts)
 
-    def record_preprocessed(self, output: str, elapsed: float) -> None:
-        """Save the Phase 1 output."""
-        self.preprocessed = output
-        self._append({"type": "pre", "output": output, "elapsed": elapsed})
+    def record_preprocessed(self, key: str, output: str, elapsed: float) -> None:
+        """Save a Phase 1 output, keyed by text_key() of its document."""
+        self.preprocessed[key] = output
+        self._append({"type": "pre", "key": key, "output": output, "elapsed": elapsed})
 
     def record_node(self, key: str, result: NodeResult) -> None:
         """Save the result of one node sent to the AI."""
         record = {
             "type": "node",
             "key": key,
+            "source": result.node.source,
             "index": result.node.index,
             "output": result.output,
             "similarity": result.similarity,
@@ -239,10 +259,10 @@ class Checkpoint:
         self.nodes[key] = record
         self._append(record)
 
-    def record_postprocessed(self, output: str, elapsed: float) -> None:
-        """Save the Phase 3 output."""
-        self.postprocessed = output
-        self._append({"type": "post", "output": output, "elapsed": elapsed})
+    def record_postprocessed(self, source: str | None, output: str, elapsed: float) -> None:
+        """Save a Phase 3 output: of one source file, or of the corpus for None."""
+        self.postprocessed[source] = output
+        self._append({"type": "post", "source": source, "output": output, "elapsed": elapsed})
 
     def delete(self) -> None:
         """Remove the progress file once the run is complete."""
@@ -276,9 +296,9 @@ class Checkpoint:
         for record in records:
             kind = record.get("type")
             if kind == "pre":
-                self.preprocessed = record["output"]
+                self.preprocessed[record["key"]] = record["output"]
             elif kind == "post":
-                self.postprocessed = record["output"]
+                self.postprocessed[record["source"]] = record["output"]
             elif kind == "node":
                 self.nodes[record["key"]] = record
 

@@ -21,7 +21,10 @@ These hold across the whole codebase. Breaking one is a bug, not a style choice.
 - **`AppConfig.apply_to_client()` is idempotent.** It may be called at interface startup and
   again before every run; unchanged settings register nothing.
 - **A phase is skipped purely by its prompt being empty.** There is no enable flag anywhere.
-- **`Node.index` is 1-based and global** across both node modes.
+- **`Node.index` is 1-based and global** across every node mode and, for a folder input, across
+  every file of the corpus.
+- **Nothing spans two input files.** Each file is parsed on its own, and both pre-passes stop at
+  a file boundary.
 - **User files resolve against the working directory**, never against the package. Only the
   static assets Iter ships with itself are package-relative.
 
@@ -41,10 +44,11 @@ Iter/
 │   ├── __main__.py            # CLI entry point  →  iter run / mcp / gui
 │   ├── checkpoint.py          # Progress file that makes runs resumable
 │   ├── config.py              # AppConfig dataclass  (config.json loader)
+│   ├── corpus.py              # Input loading (file or folder), per-file parsing, output guard
 │   ├── images.py              # Image node files: local lookup, URL download
 │   ├── logger.py              # Dual-backend logger (console + Streamlit)
 │   ├── markdown_utils.py      # Markdown parsing and block classification
-│   ├── models.py              # Preset, Node, NodeResult, ProcessingResult, cosine_similarity
+│   ├── models.py              # Preset, Corpus, Node, the results, cosine_similarity
 │   ├── mcp_tools.py           # MCP tool registrations
 │   ├── processor.py           # Core 3-phase processing pipeline
 │   └── gui/
@@ -82,6 +86,12 @@ All four ultimately call `run_iter()` in `processor.py`.
 The two large field tables that used to sit here are in the reference documents linked
 above. What follows are the models that are not user-configurable.
 
+#### `Corpus`
+The input of a run, built by `corpus.load_corpus()`: a list of `SourceFile` (`name`, `text`), the
+`root` folder relative image paths resolve against, and `is_folder`. A single document or raw
+text is a corpus of one; only a folder input sets `is_folder`, which turns on the file headers and
+the output layout.
+
 #### `Node`
 A single unit of text extracted from the document.
 
@@ -91,6 +101,7 @@ A single unit of text extracted from the document.
 | `node_type` | `"text"`, `"heading"`, `"code"`, `"table"`, `"image"` |
 | `content` | Raw text of the block |
 | `heading_prefix` | Most recent heading above this block (used to build `node_id`) |
+| `source` | Name of the input file the node comes from |
 | `node_id` *(property)* | `"3 - Introduction"` format used in separators |
 
 #### `ProcessingResult`
@@ -102,6 +113,11 @@ Returned by `run_iter()`.
 | `node_results` | `list[NodeResult]` - one per node processed |
 | `results` | Phase 2 assembled string (nodes joined with optional separators) |
 | `postprocessed` | Phase 3 AI output (empty string if skipped) |
+| `files` | `list[FileResult]` - the same four results for each input file |
+
+For a folder, the four aggregate fields join the per-file results, each under a
+`# File: <name>` header; `postprocessed` is the single corpus-wide result when
+`postprocessing_scope` is `"corpus"`. For a single document they are that document's results.
 
 ---
 
@@ -126,27 +142,35 @@ structural nodes. The result is alternating text-section nodes and structural no
 This means a section containing multiple paragraphs is sent to the AI as one combined
 string, achieving higher compression than paragraph mode.
 
+#### File mode and folders
+`corpus.parse_corpus()` runs the parser of the selected mode on each file of the corpus in
+turn, tags every node with its `source`, and renumbers `index` across the corpus. Parsing per
+file is what keeps a section from running past the end of a file, with no boundary marker
+needed. In file mode it skips the parser: each file becomes one text node with its whole
+content.
+
 ---
 
 ### Processing pipeline (`processor.py`)
 
 ```
-document_text
+corpus (one document, or the Markdown files of a folder)
     │
     ▼
 ┌─────────────────────────────────┐
 │  Phase 1 - Preprocessing        │  (skipped if preprocessing_prompt is empty)
-│  call_ai(preprocessing_prompt   │
-│           + full document)      │
-│  → preprocessed: str            │
+│  for each file:                 │
+│    call_ai(preprocessing_prompt │
+│             + full document)    │
+│  → preprocessed: str per file   │
 └─────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────┐
 │  Phase 2 - Node Processing      │  (skipped if node_prompt is empty)
 │                                 │
-│  parse document into nodes      │
-│  (paragraph or section mode)    │
+│  parse each file into nodes     │
+│  (paragraph, section, file)     │
 │                                 │
 │  pre-pass: apply merge_next     │
 │            / part_of_section    │
@@ -159,19 +183,21 @@ document_text
 │    → discard / passthrough      │
 │    → call_ai(node_prompt        │
 │               + node.content,   │
-│               messages=[preproc]│  (if include_preprocessed_context)
+│               messages=[preproc]│  (its file's; if include_preprocessed_context)
 │               file_path=image   │  (image nodes only)
 │              )                  │
 │    → optional cosine similarity │
 │    → append to results          │
 │                                 │
-│  → results: str                 │
+│  → results: str per file        │
 │  → node_results: list[NodeResult│
 └─────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────┐
 │  Phase 3 - Postprocessing       │  (skipped if postprocessing_prompt is empty)
+│  per file, or once for the      │  (postprocessing_scope, folders only)
+│  corpus with every file joined  │
 │  prompt = postprocessing_prompt │
 │         + [input doc]           │  (if postprocess_attach_input)
 │         + [preprocessed]        │  (if postprocess_attach_preprocessed)
@@ -186,6 +212,8 @@ document_text
 │  main output = one of:          │
 │    preprocessed / results /     │
 │    postprocessed                │
+│  folder: one file per input     │  (output_layout="mirror")
+│    or one merged file           │  (output_layout="merged")
 │  optionally write separate      │
 │  files for preprocessed and     │
 │  postprocessed                  │
@@ -195,6 +223,16 @@ document_text
 #### Prompt Composition
 
 All prompts sent to the LLM are constructed using simple string concatenation. No placeholder replacement or templating engine is applied (e.g., `{node}` or `{document}` are treated as literal text).
+
+- **System prompt**: the preset's `system_prompt`. When the run is given a reference context
+  file, its text closes the system prompt of every call, in all three phases:
+  ```
+  [system_prompt]
+
+  === REFERENCE CONTEXT ===
+  [context file text]
+  ```
+  *(without a `system_prompt`, the block alone)*
 
 - **Phase 1 (Preprocessing)**:
   ```
@@ -226,6 +264,8 @@ All prompts sent to the LLM are constructed using simple string concatenation. N
   === NODE RESULTS ===
   [results]
   ```
+  With `postprocessing_scope="corpus"` on a folder, each attachment joins every file's part,
+  each preceded by `# File: <name>`.
 
 #### Separator format (Phase 2)
 
@@ -275,17 +315,22 @@ The progress file is JSON Lines: a header holding the run's fingerprint, then on
 completed AI call (`pre`, `node`, `post`), appended and flushed to disk as soon as the call
 returns. Pass-through nodes are not recorded: they cost nothing to recompute.
 
-- **Fingerprint.** Hashes of the input and of the preset, plus the generation-relevant model
-  settings. Preset fields that only shape the output file are excluded, so changing them
-  never invalidates saved work.
+- **Fingerprint.** Hashes of the input (every file's name and text), of the reference context
+  and of the preset, plus the generation-relevant model settings. Preset fields that only shape
+  the output file are excluded, so changing them never invalidates saved work.
+- **Format version.** A progress file written in another format cannot be read back, so it is
+  discarded with a warning and the run starts over, without asking.
+- **Phase 1 keys.** A Phase 1 result is keyed by the hash of its document, so after an edit only
+  the edited file gets a new Phase 1.
 - **Node keys.** A node is keyed by the hash of its content (after the pre-passes) and its
   occurrence number, not by its index. When the user continues after editing the input, the
   unchanged nodes are still found and only the edited ones are redone.
 - **Mismatch.** `on_mismatch="ask"` raises `CheckpointMismatchError` before any AI call; each
   interface catches it, asks the user, and calls `run_iter()` again with `"continue"` or
   `"restart"`. Both rewrite the header, so the next run does not ask again.
-- **Phase 3 is redone when any node was.** It consolidates the node results, so a saved Phase 3
-  result is dropped as soon as Phase 2 made a new call.
+- **Phase 3 is redone when its nodes were.** It consolidates the node results, so a saved
+  Phase 3 result of a file is dropped as soon as Phase 2 made a new call for that file, and the
+  corpus-wide result as soon as Phase 2 made any new call.
 - **Damage.** A truncated last line, the trace of a hard kill, is skipped; the file is then
   rewritten before anything is appended, since a record added after a partial line would be
   lost with it.
@@ -359,10 +404,13 @@ call may write there. Library callers that handle their own output can select
 │  SIDEBAR           │  MAIN AREA                                   │
 │                    │                                              │
 │  ⚙️ Model Settings  │  📄 Files                                    │
-│    Provider    [▾] │    Input file  [path input] [📁]             │
-│    Model       [▾] │    Output file [path input] [💾]             │
-│    Embedding   [▾] │                                              │
-│     provider/model │  ▸ Phase 1 - Preprocessing (expander)        │
+│    Provider    [▾] │    Input file or folder [path] [📁] [🗂️]     │
+│    Model       [▾] │    Output file [path] [💾]                   │
+│    Embedding   [▾] │      (Output folder [path] [🗂️] for a folder │
+│     provider/model │       input in the mirror layout)            │
+│                    │    Reference context [path] [📁]             │
+│                    │                                              │
+│                    │  ▸ Phase 1 - Preprocessing (expander)        │
 │    [🔄 Refresh]    │    [text area for preprocessing_prompt]      │
 │    Temperature     │                                              │
 │    Thinking [✓]   │                                              │
@@ -371,23 +419,27 @@ call may write there. Library callers that handle their own output can select
 │    keep alive      │                                              │
 │                    │  ▸ Phase 2 - Node Processing (expander)      │
 │  📂 Presets        │    [text area for node_prompt]               │
-│    System prompt   │    node mode: ◉ Paragraph  ○ Section         │
+│    System prompt   │    node mode: ◉ Paragraph ○ Section ○ File   │
 │    [dropdown]      │    ☐ Include preprocessed as context         │
 │    [Load] [Save]   │    ☐ Compute cosine similarity               │
 │    [name input]    │    ☐ Show §N separator                       │
 │                    │    Heading handling:    [dropdown]           │
 │                    │    Non-text handling:   [dropdown]           │
 │                    │    Image handling:      [dropdown]           │
+│                    │      (the three hidden in File mode)         │
 │                    │                                              │
 │                    │  ▸ Phase 3 - Postprocessing (expander)       │
 │                    │    [text area for postprocessing_prompt]     │
 │                    │    Attach: ☐ input  ☐ preprocessed  ☐ results│
+│                    │    Scope: ◉ Per file  ○ Whole folder         │
 │                    │                                              │
 │                    │  ▸ Output Settings (expander)                │
 │                    │    Output file includes:                     │
 │                    │      ☐ Phase 1  ☑ Phase 2  ☐ Phase 3        │
 │                    │    ☐ Save Phase 1 to separate file           │
 │                    │    ☐ Save Phase 3 to separate file           │
+│                    │    ☐ Interlace original and processed        │
+│                    │    Layout: ◉ Mirror  ○ Merged                │
 │                    │                                              │
 │                    │  [▶ Run]                                     │
 │                    │                                              │
@@ -398,7 +450,9 @@ call may write there. Library callers that handle their own output can select
 └────────────────────┴──────────────────────────────────────────────┘
 ```
 
-Session state persists all widget values across Streamlit reruns.
+Session state persists all widget values across Streamlit reruns. A selectbox that is not
+rendered (the handling rules in File mode) loses its widget state, so each handling selectbox is
+rebuilt from its preset field when it reappears.
 The sidebar **Load** button reads a preset JSON and writes all its fields
 into `st.session_state`, then calls `st.rerun()`. The **Save** button
 reads `st.session_state` and writes a `Preset` JSON file to `Presets/`.

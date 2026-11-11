@@ -1,24 +1,36 @@
 """Core processing pipeline for Iter.
 
-Implements the three-phase pipeline:
-  Phase 1 - Preprocessing: single AI call on the full document.
+Implements the three-phase pipeline over a corpus (one document, or the
+Markdown files of a folder):
+  Phase 1 - Preprocessing: single AI call on each full document.
   Phase 2 - Node Processing: same prompt applied independently to each node.
-  Phase 3 - Postprocessing: single AI call on the assembled results.
+  Phase 3 - Postprocessing: single AI call on the assembled results, per
+    document or for the whole corpus.
 """
 from __future__ import annotations
 
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from unified_ai_client import call_ai
 from unified_ai_client import get_embedding as _get_embedding_vec
 
-from itertool.checkpoint import Checkpoint, file_digest, fingerprint, node_keys, progress_path
+from itertool.checkpoint import (
+    Checkpoint,
+    file_digest,
+    fingerprint,
+    node_keys,
+    progress_path,
+    text_key,
+)
 from itertool.config import AppConfig
+from itertool.corpus import check_output_location, load_corpus, parse_corpus
 from itertool.images import resolve_images
 from itertool.models import (
+    Corpus,
+    FileResult,
     Node,
     NodeResult,
     Preset,
@@ -26,12 +38,13 @@ from itertool.models import (
     cosine_similarity,
     get_similarity_indicator,
 )
-from itertool.markdown_utils import (
-    parse_into_paragraphs,
-    parse_into_sections,
-    clean_ai_response,
-)
+from itertool.markdown_utils import clean_ai_response
 import itertool.logger as logger
+
+# Introduces each file's part of the results and of the merged output of a folder.
+_FILE_HEADER = "# File: {name}"
+# Introduces the reference context at the end of the system prompt.
+_CONTEXT_HEADER = "=== REFERENCE CONTEXT ==="
 
 
 # ── AI helpers ────────────────────────────────────────────────────────────────
@@ -124,6 +137,45 @@ def _call_ai(
     )
 
 
+def _with_reference_context(preset: Preset, context: str) -> Preset:
+    """Return the preset with the reference context appended to its system prompt.
+
+    Every AI call of the run takes its system prompt from the preset, so this
+    puts the context in front of the model in all three phases.
+
+    Args:
+        preset: Active preset.
+        context: Text of the reference context file; blank means none.
+
+    Returns:
+        The preset itself when there is no context, otherwise a copy whose
+        system_prompt ends with the context block.
+    """
+    if not context.strip():
+        return preset
+    block = f"{_CONTEXT_HEADER}\n{context}"
+    system_prompt = f"{preset.system_prompt}\n\n{block}" if preset.system_prompt else block
+    return replace(preset, system_prompt=system_prompt)
+
+
+def _join_by_file(parts: list[tuple[str, str]], headers: bool) -> str:
+    """Join per-file texts, each under its file header when headers is True.
+
+    Args:
+        parts: (source file name, text) pairs in corpus order; empty texts are left out.
+        headers: Whether to put _FILE_HEADER before each text, as for a folder input.
+
+    Returns:
+        The joined text; for a single file without headers, that file's text.
+    """
+    blocks = [
+        f"{_FILE_HEADER.format(name=name)}\n\n{text}" if headers else text
+        for name, text in parts
+        if text
+    ]
+    return "\n\n".join(blocks)
+
+
 def _get_embedding(text: str, config: AppConfig, file_path: Path | None = None) -> list[float]:
     """Compute an embedding vector using the configured embedding model.
 
@@ -186,58 +238,69 @@ def _compute_similarity(
 
 # ── Phase 1: Preprocessing ────────────────────────────────────────────────────
 
-def _run_preprocessing(
+def _preprocess(
     document_text: str,
     preset: Preset,
     config: AppConfig,
     checkpoint: Checkpoint | None = None,
 ) -> str:
-    """Run Phase 1: a single AI call over the full document.
-
-    Skipped if preset.preprocessing_prompt is empty.
+    """Make the Phase 1 call for one document, or restore it from the progress file.
 
     Args:
-        document_text: Full input document text.
+        document_text: Full text of the document.
         preset: Active preset.
         config: Application configuration.
         checkpoint: Progress file to restore from and record into, or None.
 
     Returns:
-        AI response string, or empty string if skipped.
+        AI response string.
     """
-    if not preset.preprocessing_prompt.strip():
-        return ""
-
-    logger.log_separator()
-    logger.log_info("Phase 1: Preprocessing")
-    if checkpoint and checkpoint.preprocessed is not None:
+    key = text_key(document_text)
+    if checkpoint and key in checkpoint.preprocessed:
         logger.log_action("Preprocessing restored from the progress file.")
-        return checkpoint.preprocessed
+        return checkpoint.preprocessed[key]
 
     prompt = f"{preset.preprocessing_prompt}\n\n{document_text}"
     reply = _call_ai(prompt, config, preset)
     logger.log_success(f"Preprocessing complete ({_reply_stats(len(document_text), reply)}).")
     if checkpoint:
-        checkpoint.record_preprocessed(reply.text, reply.elapsed)
+        checkpoint.record_preprocessed(key, reply.text, reply.elapsed)
     return reply.text
 
 
-# ── Phase 2: Node Processing ──────────────────────────────────────────────────
+def _run_preprocessing(
+    corpus: Corpus,
+    preset: Preset,
+    config: AppConfig,
+    checkpoint: Checkpoint | None = None,
+) -> dict[str, str]:
+    """Run Phase 1: a single AI call over each full document of the corpus.
 
-def _resolve_nodes(document_text: str, preset: Preset) -> list[Node]:
-    """Parse the document into nodes according to the preset's node_mode.
+    Skipped if preset.preprocessing_prompt is empty.
 
     Args:
-        document_text: Full input document text.
-        preset: Active preset (reads node_mode).
+        corpus: The input documents.
+        preset: Active preset.
+        config: Application configuration.
+        checkpoint: Progress file to restore from and record into, or None.
 
     Returns:
-        List of Node objects.
+        AI response string by source file name, or an empty dict if skipped.
     """
-    if preset.node_mode == "section":
-        return parse_into_sections(document_text)
-    return parse_into_paragraphs(document_text)
+    if not preset.preprocessing_prompt.strip():
+        return {}
 
+    logger.log_separator()
+    logger.log_info("Phase 1: Preprocessing")
+    preprocessed: dict[str, str] = {}
+    for source in corpus.files:
+        if corpus.is_folder:
+            logger.log_action(f"File: {source.name}")
+        preprocessed[source.name] = _preprocess(source.text, preset, config, checkpoint)
+    return preprocessed
+
+
+# ── Phase 2: Node Processing ──────────────────────────────────────────────────
 
 def _build_separator(node: Node, similarity: float | None, show: bool) -> str:
     """Build the optional §N separator line for a node result.
@@ -383,8 +446,8 @@ def _process_node(
 def _merge_headings(nodes: list[Node], preset: Preset) -> list[Node]:
     """Pre-pass for merge_next: merge each heading into the text node that follows it.
 
-    A heading with no text node right after it is left alone; _process_node
-    passes it through.
+    A heading with no text node right after it in the same file is left alone;
+    _process_node passes it through.
 
     Args:
         nodes: The parsed node list.
@@ -399,12 +462,18 @@ def _merge_headings(nodes: list[Node], preset: Preset) -> list[Node]:
     i = 0
     while i < len(nodes):
         node = nodes[i]
-        if node.node_type == "heading" and i + 1 < len(nodes) and nodes[i + 1].node_type == "text":
+        if (
+            node.node_type == "heading"
+            and i + 1 < len(nodes)
+            and nodes[i + 1].node_type == "text"
+            and nodes[i + 1].source == node.source
+        ):
             merged.append(Node(
                 index=node.index,
                 node_type="text",
                 content=f"{node.content}\n\n{nodes[i + 1].content}",
                 heading_prefix=node.content.strip(),
+                source=node.source,
             ))
             i += 2
         else:
@@ -417,8 +486,8 @@ def _absorb_into_sections(nodes: list[Node], preset: Preset) -> list[Node]:
     """Pre-pass for part_of_section: absorb the blocks that follow a section into it.
 
     Only blocks whose own handling field asks for part_of_section are absorbed,
-    and only in section mode. A block with no section before it is left alone;
-    _process_node passes it through.
+    and only in section mode. A block with no section before it in the same
+    file is left alone; _process_node passes it through.
 
     Args:
         nodes: The node list after _merge_headings().
@@ -440,6 +509,7 @@ def _absorb_into_sections(nodes: list[Node], preset: Preset) -> list[Node]:
             while (
                 j + 1 < len(nodes)
                 and nodes[j + 1].node_type not in ("text", "heading")
+                and nodes[j + 1].source == node.source
                 and _handling_for(nodes[j + 1], preset) == "part_of_section"
             ):
                 j += 1
@@ -449,6 +519,7 @@ def _absorb_into_sections(nodes: list[Node], preset: Preset) -> list[Node]:
                 node_type="text",
                 content=combined_content,
                 heading_prefix=node.heading_prefix,
+                source=node.source,
             ))
         else:
             assembled.append(node)
@@ -475,43 +546,41 @@ def _log_phase_two_stats(node_results: list[NodeResult]) -> None:
 
 
 def _run_node_processing(
-    document_text: str,
+    corpus: Corpus,
     preset: Preset,
     config: AppConfig,
-    preprocessed: str,
+    preprocessed: dict[str, str],
     checkpoint: Checkpoint | None = None,
-    base_dir: Path | None = None,
-) -> tuple[list[NodeResult], str]:
+) -> tuple[list[NodeResult], dict[str, str]]:
     """Run Phase 2: apply node_prompt to each node independently.
 
     Skipped if preset.node_prompt is empty.
 
-    Runs the merge_next and part_of_section pre-passes, then locates the image
-    files when image_handling attaches them, then sends each node.
+    Parses every file of the corpus, runs the merge_next and part_of_section
+    pre-passes, then locates the image files when image_handling attaches them,
+    then sends each node.
 
     Args:
-        document_text: Full input document text.
+        corpus: The input documents; relative image paths resolve against its root.
         preset: Active preset.
         config: Application configuration.
-        preprocessed: Phase 1 result (may be empty).
+        preprocessed: Phase 1 results by source file name (may be empty).
         checkpoint: Progress file to restore from and record into, or None.
-        base_dir: Directory relative image paths are resolved against.
-            Defaults to the working directory.
 
     Returns:
-        Tuple of (list of NodeResult, assembled results string).
+        Tuple of (list of NodeResult, assembled results string by source file name).
 
     Raises:
         FileNotFoundError: If image_handling sends images and one is missing.
         urllib.error.URLError: If a remote image cannot be downloaded.
     """
     if not preset.node_prompt.strip():
-        return [], ""
+        return [], {}
 
     logger.log_separator()
     logger.log_info(f"Phase 2: Node Processing ({preset.node_mode} mode)")
 
-    if preset.node_mode != "section":
+    if preset.node_mode == "paragraph":
         for field_name, label in (("non_text_handling", "non-text"), ("image_handling", "image")):
             if getattr(preset, field_name) == "part_of_section":
                 logger.log_warning(
@@ -519,79 +588,81 @@ def _run_node_processing(
                     f"{label} nodes will pass through unchanged"
                 )
 
-    nodes = _resolve_nodes(document_text, preset)
+    nodes = parse_corpus(corpus, preset.node_mode)
     nodes = _merge_headings(nodes, preset)
     nodes = _absorb_into_sections(nodes, preset)
 
     node_results: list[NodeResult] = []
-    output_parts: list[str] = []
+    output_parts: dict[str, list[str]] = {source.name: [] for source in corpus.files}
     # Counted after both pre-passes: what they merged is one node, not two.
     total = len(nodes)
     logger.log_action(f"Found {total} nodes. Processing...")
     state = _RunState(similarity_enabled=preset.compute_similarity, checkpoint=checkpoint)
+    current_source: str | None = None
     with tempfile.TemporaryDirectory(prefix="iter-images-") as download_dir:
         images: dict[int, Path] = {}
         if preset.image_handling == "standalone_nodes":
-            images = resolve_images(nodes, base_dir or Path.cwd(), Path(download_dir))
+            images = resolve_images(nodes, corpus.root, Path(download_dir))
         image_digests = {index: file_digest(path) for index, path in images.items()}
         keys = node_keys(nodes, image_digests)
         for position, (node, key) in enumerate(zip(nodes, keys), 1):
+            if corpus.is_folder and node.source != current_source:
+                current_source = node.source
+                logger.log_action(f"File: {node.source}")
             logger.log_action(f"Node {position}/{total} (§{node.index}) [{node.node_type}]")
             result = _process_node(
-                node, preset, config, preprocessed, state, key, images.get(node.index)
+                node, preset, config, preprocessed.get(node.source, ""), state, key,
+                images.get(node.index),
             )
             node_results.append(result)
 
             if result.output:
+                parts = output_parts[node.source]
                 sep = _build_separator(node, result.similarity, preset.show_similarity_separator)
                 if sep:
-                    output_parts.append(sep)
+                    parts.append(sep)
                 if preset.interlace_input_output and result.was_processed:
                     interlaced = f"**Original:**\n{node.content}\n\n**Processed:**\n{result.output}"
-                    output_parts.append(interlaced)
+                    parts.append(interlaced)
                 else:
-                    output_parts.append(result.output)
+                    parts.append(result.output)
 
     _log_phase_two_stats(node_results)
-    return node_results, "\n\n".join(output_parts)
+    return node_results, {name: "\n\n".join(parts) for name, parts in output_parts.items()}
 
 
 # ── Phase 3: Postprocessing ───────────────────────────────────────────────────
 
-def _run_postprocessing(
+def _postprocess(
     document_text: str,
     preprocessed: str,
     results: str,
     preset: Preset,
     config: AppConfig,
     checkpoint: Checkpoint | None = None,
+    source: str | None = "",
 ) -> str:
-    """Run Phase 3: a single AI call to consolidate all results.
-
-    Skipped if preset.postprocessing_prompt is empty.
+    """Make one Phase 3 call, or restore it from the progress file.
 
     Builds the prompt by concatenating the postprocessing prompt text with
     any selected attachments (original input, preprocessed, results).
 
     Args:
-        document_text: Original input document text.
-        preprocessed: Phase 1 result.
-        results: Phase 2 assembled output.
+        document_text: Original input text the call covers.
+        preprocessed: Phase 1 result for that input.
+        results: Phase 2 assembled output for that input.
         preset: Active preset.
         config: Application configuration.
         checkpoint: Progress file to restore from and record into, or None.
+        source: Source file name the call covers, or None for the whole corpus;
+            the key of the call in the progress file.
 
     Returns:
-        AI response string, or empty string if skipped.
+        AI response string.
     """
-    if not preset.postprocessing_prompt.strip():
-        return ""
-
-    logger.log_separator()
-    logger.log_info("Phase 3: Postprocessing")
-    if checkpoint and checkpoint.postprocessed is not None:
+    if checkpoint and source in checkpoint.postprocessed:
         logger.log_action("Postprocessing restored from the progress file.")
-        return checkpoint.postprocessed
+        return checkpoint.postprocessed[source]
 
     attachments = [
         (title, text)
@@ -610,8 +681,66 @@ def _run_postprocessing(
     attached_chars = sum(len(text) for _, text in attachments)
     logger.log_success(f"Postprocessing complete ({_reply_stats(attached_chars, reply)}).")
     if checkpoint:
-        checkpoint.record_postprocessed(reply.text, reply.elapsed)
+        checkpoint.record_postprocessed(source, reply.text, reply.elapsed)
     return reply.text
+
+
+def _run_postprocessing(
+    corpus: Corpus,
+    preprocessed: dict[str, str],
+    results: dict[str, str],
+    preset: Preset,
+    config: AppConfig,
+    checkpoint: Checkpoint | None = None,
+) -> tuple[dict[str, str], str]:
+    """Run Phase 3: consolidate the results, per file or for the whole corpus.
+
+    Skipped if preset.postprocessing_prompt is empty. A folder with
+    postprocessing_scope 'corpus' gets one call whose attachments join every
+    file under its header; any other input gets one call per file.
+
+    Args:
+        corpus: The input documents.
+        preprocessed: Phase 1 results by source file name.
+        results: Phase 2 assembled output by source file name.
+        preset: Active preset.
+        config: Application configuration.
+        checkpoint: Progress file to restore from and record into, or None.
+
+    Returns:
+        Tuple of (AI response by source file name, corpus-wide AI response);
+        only one of the two is filled, and both are empty if skipped.
+    """
+    if not preset.postprocessing_prompt.strip():
+        return {}, ""
+
+    logger.log_separator()
+    logger.log_info("Phase 3: Postprocessing")
+    if corpus.is_folder and preset.postprocessing_scope == "corpus":
+        if preset.postprocess_attach_input:
+            logger.log_warning(
+                "postprocessing_scope='corpus' with postprocess_attach_input attaches every "
+                "input file to a single call, which may not fit the model's context"
+            )
+
+        def joined(texts: dict[str, str]) -> str:
+            return _join_by_file([(s.name, texts.get(s.name, "")) for s in corpus.files], headers=True)
+
+        document_text = _join_by_file([(s.name, s.text) for s in corpus.files], headers=True)
+        corpus_post = _postprocess(
+            document_text, joined(preprocessed), joined(results), preset, config, checkpoint, None
+        )
+        return {}, corpus_post
+
+    postprocessed: dict[str, str] = {}
+    for source in corpus.files:
+        if corpus.is_folder:
+            logger.log_action(f"File: {source.name}")
+        postprocessed[source.name] = _postprocess(
+            source.text, preprocessed.get(source.name, ""), results.get(source.name, ""),
+            preset, config, checkpoint, source.name,
+        )
+    return postprocessed, ""
 
 
 # ── Output assembly ───────────────────────────────────────────────────────────
@@ -622,7 +751,7 @@ def _compose_output(
     postprocessed: str,
     preset: Preset,
 ) -> str:
-    """Build the main output by concatenating all selected sections in order.
+    """Build the output of one document by concatenating its selected sections in order.
 
     Sections are separated by a Markdown horizontal rule ('---') so the output
     remains valid Markdown even when multiple sections are included.
@@ -646,21 +775,113 @@ def _compose_output(
     return "\n\n---\n\n".join(parts)
 
 
+def _write(path: Path, text: str, label: str) -> None:
+    """Write one output file, creating its folder, and log where it went."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    logger.log_save(f"{label} saved to: {path}")
+
+
+def _side_path(path: Path, suffix: str) -> Path:
+    """Path of a side file next to an output file: 'out.md' -> 'out_preprocessed.md'."""
+    return path.with_stem(path.stem + suffix)
+
+
+def _write_merged(result: ProcessingResult, corpus_post: str, out: Path, preset: Preset, headers: bool) -> None:
+    """Write one output file holding every document, each under its header when headers is True.
+
+    Each document contributes its own composition (_compose_output), so a
+    per-file Phase 3 result follows that file's node results. A corpus-wide
+    Phase 3 result comes last. A document with nothing selected is left out.
+
+    Args:
+        result: The run's results; its aggregate fields fill the side files.
+        corpus_post: The corpus-wide Phase 3 result, or empty string.
+        out: The output file.
+        preset: Active preset (reads the output_include_* and save_* flags).
+        headers: Whether to put the file header before each document, as for a folder.
+    """
+    documents = _join_by_file(
+        [(f.source, _compose_output(f.preprocessed, f.results, f.postprocessed, preset)) for f in result.files],
+        headers,
+    )
+    sections = [documents]
+    if preset.output_include_postprocessed:
+        sections.append(corpus_post)
+    main_output = "\n\n---\n\n".join(s for s in sections if s)
+    if main_output:
+        _write(out, main_output, "Main output")
+    if preset.save_preprocessed_separately and result.preprocessed:
+        _write(_side_path(out, "_preprocessed"), result.preprocessed, "Preprocessed output")
+    if preset.save_postprocessed_separately and result.postprocessed:
+        _write(_side_path(out, "_postprocessed"), result.postprocessed, "Postprocessed output")
+
+
+def _write_mirror(result: ProcessingResult, corpus_post: str, out_dir: Path, preset: Preset) -> None:
+    """Write one output file per document into out_dir, under the document's own name.
+
+    A corpus-wide Phase 3 result belongs to no document, so it is always
+    written beside the folder, as '<folder>_postprocessed.md'.
+
+    Args:
+        result: The run's results, one FileResult per document.
+        corpus_post: The corpus-wide Phase 3 result, or empty string.
+        out_dir: The output folder.
+        preset: Active preset (reads the output_include_* and save_* flags).
+    """
+    for file_result in result.files:
+        path = out_dir / file_result.source
+        main_output = _compose_output(
+            file_result.preprocessed, file_result.results, file_result.postprocessed, preset
+        )
+        if main_output:
+            _write(path, main_output, "Main output")
+        if preset.save_preprocessed_separately and file_result.preprocessed:
+            _write(_side_path(path, "_preprocessed"), file_result.preprocessed, "Preprocessed output")
+        if preset.save_postprocessed_separately and file_result.postprocessed:
+            _write(_side_path(path, "_postprocessed"), file_result.postprocessed, "Postprocessed output")
+    if corpus_post:
+        _write(out_dir.with_name(f"{out_dir.name}_postprocessed.md"), corpus_post, "Postprocessed output")
+
+
+def default_output_path(input_path: str, preset: Preset) -> str:
+    """Name the output of a run when the caller gives none.
+
+    Args:
+        input_path: The input document or folder.
+        preset: Active preset (reads output_layout).
+
+    Returns:
+        '<name>_processed<ext>' next to a document; for a folder,
+        '<folder>_processed' beside it in the mirror layout, or
+        '<folder>_processed.md' in the merged layout.
+    """
+    path = Path(input_path)
+    if path.is_dir():
+        folder = path.resolve()
+        name = f"{folder.name}_processed"
+        return str(folder.with_name(name if preset.output_layout == "mirror" else f"{name}.md"))
+    return str(path.with_name(f"{path.stem}_processed{path.suffix}"))
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def run_iter(
-    input_file: str | None = None,
+    input_path: str | None = None,
     input_text: str | None = None,
     output_file: str | None = None,
     preset: Preset | None = None,
     config: AppConfig | None = None,
+    context_file: str | None = None,
     on_mismatch: str = "ask",
 ) -> ProcessingResult:
-    """Run the full Iter processing pipeline on a document.
+    """Run the full Iter processing pipeline on a document or a folder of documents.
 
-    Accepts either a file path or a raw text string as input. Runs up to
-    three sequential phases (preprocessing, node processing, postprocessing),
-    each of which is skipped when its corresponding prompt is empty.
+    Accepts a file path, a folder path, or a raw text string as input. A folder
+    contributes the Markdown files (.md, .markdown) directly inside it, in
+    natural order of their names. Runs up to three sequential phases
+    (preprocessing, node processing, postprocessing), each of which is skipped
+    when its corresponding prompt is empty.
 
     Optionally saves the main output, preprocessed, and postprocessed results
     to disk according to the preset's output settings.
@@ -670,27 +891,35 @@ def run_iter(
     once all outputs are written; see checkpoint.progress_path() for where it lives.
 
     Args:
-        input_file: Path to the input Markdown file. Used if input_text is None.
+        input_path: Path to the input Markdown file, or to a folder of them.
+            Used if input_text is None.
         input_text: Raw Markdown text to process (bypasses file reading).
-        output_file: Path where the main output will be saved. Optional.
+        output_file: Where the main output is saved. For a folder input in the
+            'mirror' output_layout, the folder that receives one file per input
+            file. Optional.
         preset: Active Preset configuration. Defaults to a bare Preset().
         config: Application configuration. Defaults to AppConfig.load().
+        context_file: Optional text file appended to the system prompt of every
+            AI call, under '=== REFERENCE CONTEXT ==='.
         on_mismatch: What to do with a progress file written for a different
-            input, preset or model: 'ask' raises CheckpointMismatchError so the
-            caller can ask the user, 'continue' keeps the saved results,
+            input, context, preset or model: 'ask' raises CheckpointMismatchError
+            so the caller can ask the user, 'continue' keeps the saved results,
             'restart' discards them.
 
     Returns:
         A ProcessingResult with all intermediate and final results.
 
     Raises:
-        ValueError: If neither input_text nor a valid input_file is provided,
-            or on_mismatch is not a known policy.
+        ValueError: If neither input_text nor an existing input_path is
+            provided, the folder holds no Markdown file, the output of a folder
+            is misplaced (see corpus.check_output_location()), or on_mismatch
+            is not a known policy.
+        FileNotFoundError: If context_file does not exist, or image_handling is
+            'standalone_nodes' and a local image does not exist. Relative image
+            paths are resolved against the input file's folder, the input
+            folder, or the working directory for input_text.
         CheckpointMismatchError: If on_mismatch is 'ask' and the progress file
             belongs to a different run.
-        FileNotFoundError: If image_handling is 'standalone_nodes' and a local
-            image does not exist. Relative paths are resolved against the input
-            file's folder, or the working directory for input_text.
         urllib.error.URLError: If such an image is a URL that cannot be downloaded.
     """
     start = time.perf_counter()
@@ -703,33 +932,29 @@ def run_iter(
     # Idempotent: a no-op when the interface already applied the same settings.
     config.apply_to_client()
 
-    # --- Load document ---
-    if input_text is not None:
-        document_text = input_text
-    elif input_file is not None and Path(input_file).exists():
-        logger.log_action(f"Loading document from: {input_file}")
-        document_text = Path(input_file).read_text(encoding="utf-8")
-    else:
-        raise ValueError(
-            f"Provide a valid input_text or an existing input_file. Got: {input_file}"
-        )
+    # --- Load input ---
+    corpus = load_corpus(input_path, input_text)
+    check_output_location(corpus, output_file, preset.output_layout)
+    context = Path(context_file).read_text(encoding="utf-8") if context_file else ""
 
     logger.log_separator()
     logger.log_info(f"Iter - provider: {config.provider} | model: {config.model_name}")
     logger.log_info(f"Node mode: {preset.node_mode}")
+    if context_file:
+        logger.log_info(f"Reference context: {context_file}")
 
     checkpoint = Checkpoint(
-        progress_path(output_file, input_file, input_text),
-        fingerprint(document_text, preset, config),
+        progress_path(output_file, input_path, input_text),
+        fingerprint(corpus, preset, config, context),
         on_mismatch,
     )
     if checkpoint.resumed:
         logger.log_info(f"Resuming from {checkpoint.path}: {checkpoint.summary()}")
 
-    # Relative image paths are written relative to the document they appear in.
-    base_dir = Path(input_file).resolve().parent if input_text is None else Path.cwd()
     try:
-        proc_result = _run_phases(document_text, output_file, preset, config, checkpoint, base_dir)
+        proc_result = _run_phases(
+            corpus, output_file, _with_reference_context(preset, context), config, checkpoint
+        )
     except BaseException:
         logger.log_warning(f"Progress saved to {checkpoint.path}; run again to resume.")
         raise
@@ -741,69 +966,69 @@ def run_iter(
 
 
 def _run_phases(
-    document_text: str,
+    corpus: Corpus,
     output_file: str | None,
     preset: Preset,
     config: AppConfig,
     checkpoint: Checkpoint,
-    base_dir: Path,
 ) -> ProcessingResult:
     """Run the three phases and write the outputs; the body of run_iter().
 
     Args:
-        document_text: The loaded input document.
-        output_file: Path where the main output will be saved, or None.
-        preset: Active preset.
+        corpus: The loaded input.
+        output_file: Path where the main output will be saved (a folder for a
+            mirrored folder input), or None.
+        preset: Active preset, with the reference context in its system prompt.
         config: Application configuration.
         checkpoint: The run's progress file.
-        base_dir: Directory relative image paths are resolved against.
 
     Returns:
         A ProcessingResult with all intermediate and final results.
     """
     # --- Phase 1: Preprocessing ---
-    preprocessed = _run_preprocessing(document_text, preset, config, checkpoint)
+    preprocessed = _run_preprocessing(corpus, preset, config, checkpoint)
 
     # --- Phase 2: Node Processing ---
-    nodes_saved_before = len(checkpoint.nodes)
-    node_results, results = _run_node_processing(
-        document_text, preset, config, preprocessed, checkpoint, base_dir
-    )
-    if len(checkpoint.nodes) != nodes_saved_before:
-        # Phase 3 consolidates the node results: once any node was redone, a
-        # saved Phase 3 result no longer matches them.
-        checkpoint.postprocessed = None
+    keys_saved_before = set(checkpoint.nodes)
+    node_results, results = _run_node_processing(corpus, preset, config, preprocessed, checkpoint)
+    redone = {checkpoint.nodes[key]["source"] for key in checkpoint.nodes.keys() - keys_saved_before}
+    if redone:
+        # Phase 3 consolidates the node results: once a node of a file was redone,
+        # a saved Phase 3 result of that file, or of the whole corpus, no longer
+        # matches them.
+        for source in (*redone, None):
+            checkpoint.postprocessed.pop(source, None)
 
     # --- Phase 3: Postprocessing ---
-    postprocessed = _run_postprocessing(
-        document_text, preprocessed, results, preset, config, checkpoint
+    postprocessed, corpus_post = _run_postprocessing(
+        corpus, preprocessed, results, preset, config, checkpoint
     )
 
     # --- Build result object ---
+    files = [
+        FileResult(
+            source=source.name,
+            preprocessed=preprocessed.get(source.name, ""),
+            node_results=[r for r in node_results if r.node.source == source.name],
+            results=results.get(source.name, ""),
+            postprocessed=postprocessed.get(source.name, ""),
+        )
+        for source in corpus.files
+    ]
+    headers = corpus.is_folder
     proc_result = ProcessingResult(
-        preprocessed=preprocessed,
+        preprocessed=_join_by_file([(f.source, f.preprocessed) for f in files], headers),
         node_results=node_results,
-        results=results,
-        postprocessed=postprocessed,
+        results=_join_by_file([(f.source, f.results) for f in files], headers),
+        postprocessed=corpus_post or _join_by_file([(f.source, f.postprocessed) for f in files], headers),
+        files=files,
     )
 
     # --- Save outputs ---
-    main_output = _compose_output(preprocessed, results, postprocessed, preset)
-
-    if output_file and main_output:
-        out_path = Path(output_file)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(main_output, encoding="utf-8")
-        logger.log_save(f"Main output saved to: {output_file}")
-
-    if preset.save_preprocessed_separately and preprocessed and output_file:
-        pre_path = Path(output_file).with_stem(Path(output_file).stem + "_preprocessed")
-        pre_path.write_text(preprocessed, encoding="utf-8")
-        logger.log_save(f"Preprocessed output saved to: {pre_path}")
-
-    if preset.save_postprocessed_separately and postprocessed and output_file:
-        post_path = Path(output_file).with_stem(Path(output_file).stem + "_postprocessed")
-        post_path.write_text(postprocessed, encoding="utf-8")
-        logger.log_save(f"Postprocessed output saved to: {post_path}")
+    if output_file:
+        if corpus.is_folder and preset.output_layout == "mirror":
+            _write_mirror(proc_result, corpus_post, Path(output_file), preset)
+        else:
+            _write_merged(proc_result, corpus_post, Path(output_file), preset, headers)
 
     return proc_result

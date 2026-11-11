@@ -1,4 +1,4 @@
-"""Native open/save file dialogs for the Streamlit GUI.
+"""Native open/save file and folder dialogs for the Streamlit GUI.
 
 Each dialog runs tkinter in a short-lived child process. Streamlit executes the
 script on a different thread at every rerun, and a Tk interpreter touched or
@@ -20,7 +20,9 @@ root = tk.Tk()
 root.withdraw()
 root.wm_attributes("-topmost", 1)
 filetypes = [tuple(t) for t in args["filetypes"]]
-if args["save"]:
+if args["directory"]:
+    selected = filedialog.askdirectory(initialdir=args["initial_dir"])
+elif args["save"]:
     selected = filedialog.asksaveasfilename(
         initialdir=args["initial_dir"], filetypes=filetypes, defaultextension=args["default_ext"]
     )
@@ -36,6 +38,7 @@ def ask_path(
     filetypes: list[tuple[str, str]],
     save: bool = False,
     default_ext: str = "",
+    directory: bool = False,
 ) -> str | None:
     """Show a native file dialog and return the chosen path, or None if cancelled.
 
@@ -44,6 +47,8 @@ def ask_path(
         filetypes: ``(label, pattern)`` pairs, e.g. ``("Markdown Files", "*.md")``.
         save: Show a save-as dialog instead of an open dialog.
         default_ext: Extension the save-as dialog appends when none is typed.
+        directory: Show a folder picker instead; filetypes, save and
+            default_ext are then ignored.
 
     Returns:
         The chosen path, relative to the working directory when it lies inside
@@ -56,6 +61,7 @@ def ask_path(
         "filetypes": filetypes,
         "save": save,
         "default_ext": default_ext,
+        "directory": directory,
     }
     try:
         result = subprocess.run(

@@ -1,4 +1,4 @@
-"""Data models for Iter: Preset, ProcessingResult, Node, and similarity helpers."""
+"""Data models for Iter: Preset, Corpus, Node, the results, and similarity helpers."""
 from __future__ import annotations
 
 import json
@@ -23,10 +23,14 @@ class Preset:
     Attributes:
         name: Human-readable preset name.
         system_prompt: System instruction for all AI calls in this preset.
-        node_mode: Granularity of processing nodes ('paragraph' or 'section').
+        node_mode: Granularity of processing nodes: 'paragraph', 'section', or
+            'file' (each input file is one node).
         preprocessing_prompt: Prompt for Phase 1 (whole-document AI call).
         node_prompt: Prompt applied to each node in Phase 2.
         postprocessing_prompt: Prompt for Phase 3 (whole-results AI call).
+        postprocessing_scope: What one Phase 3 call covers when the input is a folder.
+            'file': one call per input file, with that file's attachments.
+            'corpus': one call for the whole folder, with the attachments of every file.
         include_preprocessed_context: If True, inject the Phase 1 result as
             a prior assistant message when calling the node prompt.
         heading_handling: How to handle heading blocks in Phase 2.
@@ -58,6 +62,9 @@ class Preset:
         save_preprocessed_separately: Save Phase 1 result to a separate file.
         save_postprocessed_separately: Save Phase 3 result to a separate file.
         interlace_input_output: Interlace the original input node content with the processed output content.
+        output_layout: How the outputs of a folder input are written.
+            'mirror': one output file per input file, in the output folder.
+            'merged': a single output file, each input file under its own header.
     """
 
     name: str = ""
@@ -66,6 +73,7 @@ class Preset:
     preprocessing_prompt: str = ""
     node_prompt: str = ""
     postprocessing_prompt: str = ""
+    postprocessing_scope: str = "file"
     include_preprocessed_context: bool = False
     heading_handling: str = "report_unprocessed"
     non_text_handling: str = "report_unprocessed"
@@ -81,6 +89,7 @@ class Preset:
     save_preprocessed_separately: bool = False
     save_postprocessed_separately: bool = False
     interlace_input_output: bool = False
+    output_layout: str = "mirror"
 
     @classmethod
     def load(cls, path: str | Path) -> Preset:
@@ -116,6 +125,38 @@ class Preset:
             json.dump(asdict(self), f, indent=2, ensure_ascii=False)
 
 
+# ── Corpus ─────────────────────────────────────────────────────────────────────
+
+@dataclass
+class SourceFile:
+    """One input document of a run.
+
+    Attributes:
+        name: File name, relative to the corpus root; empty for raw text input.
+        text: The document's Markdown.
+    """
+
+    name: str
+    text: str
+
+
+@dataclass
+class Corpus:
+    """The input of a run: one document, or every Markdown file of a folder.
+
+    Attributes:
+        root: Folder relative image paths are resolved against: the input
+            folder, the input file's folder, or the working directory for raw text.
+        files: The input documents, in processing order.
+        is_folder: Whether the input was a folder. Only then do file headers
+            appear in the results and the output layout apply.
+    """
+
+    root: Path
+    files: list[SourceFile]
+    is_folder: bool = False
+
+
 # ── Node ───────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -127,12 +168,14 @@ class Node:
         node_type: Block type: 'text', 'heading', 'code', 'table', 'image'.
         content: Raw text content of the node.
         heading_prefix: Nearest heading text above this node, used for node IDs.
+        source: Name of the input file the node comes from (SourceFile.name).
     """
 
     index: int
     node_type: str
     content: str
     heading_prefix: str = ""
+    source: str = ""
 
     @property
     def node_id(self) -> str:
@@ -173,20 +216,46 @@ class NodeResult:
 
 
 @dataclass
+class FileResult:
+    """The results of one input file.
+
+    Attributes:
+        source: Name of the input file (SourceFile.name).
+        preprocessed: Phase 1 output for this file, or empty string.
+        node_results: Phase 2 results of this file's nodes.
+        results: Assembled Phase 2 output of this file.
+        postprocessed: Phase 3 output for this file, or empty string; always
+            empty when postprocessing_scope is 'corpus' on a folder.
+    """
+
+    source: str
+    preprocessed: str = ""
+    node_results: list[NodeResult] = field(default_factory=list)
+    results: str = ""
+    postprocessed: str = ""
+
+
+@dataclass
 class ProcessingResult:
     """Holds all intermediate and final results from a full Iter run.
 
+    For a single document the aggregate fields are that document's results. For
+    a folder they join the results of every file, each under its file header.
+
     Attributes:
-        preprocessed: Output from Phase 1 (preprocessing prompt), or empty string.
-        node_results: List of per-node results from Phase 2.
-        results: Assembled Phase 2 output string (nodes joined with separators).
-        postprocessed: Output from Phase 3 (postprocessing prompt), or empty string.
+        preprocessed: Phase 1 output, or empty string.
+        node_results: Per-node results of Phase 2, across every file.
+        results: Assembled Phase 2 output (nodes joined with separators).
+        postprocessed: Phase 3 output: the single corpus-wide call, or the
+            per-file outputs joined; empty string if skipped.
+        files: The results of each input file, in processing order.
     """
 
     preprocessed: str = ""
     node_results: list[NodeResult] = field(default_factory=list)
     results: str = ""
     postprocessed: str = ""
+    files: list[FileResult] = field(default_factory=list)
 
 
 # ── Cosine Similarity ─────────────────────────────────────────────────────────

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from unified_ai_client import silence_sdks
 from itertool.checkpoint import CheckpointMismatchError
-from itertool.processor import run_iter
+from itertool.processor import default_output_path, run_iter
 from itertool.models import Preset
 from itertool.config import AppConfig
 import itertool.logger as logger
@@ -66,7 +66,13 @@ def cmd_run(args: argparse.Namespace) -> None:
         if args.postprocessing_prompt:
             preset.postprocessing_prompt = args.postprocessing_prompt
 
-        run_kwargs = dict(input_file=args.input, output_file=args.output, preset=preset, config=config)
+        run_kwargs = dict(
+            input_path=args.input,
+            output_file=args.output or default_output_path(args.input, preset),
+            preset=preset,
+            config=config,
+            context_file=args.context,
+        )
         try:
             run_iter(**run_kwargs)
         except CheckpointMismatchError as exc:
@@ -131,15 +137,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    p_run = subparsers.add_parser("run", help="Process a Markdown document node by node.")
-    p_run.add_argument("--input", required=True, help="Input Markdown file path.")
-    p_run.add_argument("--output", required=True, help="Output file path.")
+    p_run = subparsers.add_parser("run", help="Process a Markdown document, or a folder of them, node by node.")
+    p_run.add_argument("--input", required=True, help="Input Markdown file, or a folder of Markdown files.")
+    p_run.add_argument(
+        "--output",
+        default=None,
+        help=(
+            "Output file, or output folder for a folder input in the mirror layout. "
+            "Default: <name>_processed<ext> next to a file; <folder>_processed beside a folder "
+            "(mirror), or <folder>_processed.md (merged)."
+        ),
+    )
     p_run.add_argument("--preset", default=None, help="Preset name to load from Presets/ directory.")
     p_run.add_argument(
-        "--node-mode",
-        choices=["paragraph", "section"],
+        "--context",
         default=None,
-        help="Node granularity: 'paragraph' or 'section'.",
+        help="Reference context file, appended to the system prompt of every AI call.",
+    )
+    p_run.add_argument(
+        "--node-mode",
+        choices=["paragraph", "section", "file"],
+        default=None,
+        help="Node granularity: 'paragraph', 'section' or 'file'.",
     )
     p_run.add_argument("--preprocessing-prompt", default=None, help="Preprocessing prompt text.")
     p_run.add_argument("--node-prompt", default=None, help="Node prompt text.")
@@ -150,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_mcp.set_defaults(func=cmd_mcp)
 
     p_gui = subparsers.add_parser("gui", help="Launch the Streamlit web interface.")
-    p_gui.add_argument("input", nargs="?", help="Markdown file to set as the input.")
+    p_gui.add_argument("input", nargs="?", help="Markdown file or folder to set as the input.")
     p_gui.set_defaults(func=cmd_gui)
 
     return parser

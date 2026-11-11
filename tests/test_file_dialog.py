@@ -12,10 +12,18 @@ from itertool.gui.file_dialog import ask_path
 class TestAskPath(unittest.TestCase):
     """ask_path() runs the dialog in a child process, faked here."""
 
-    def _ask(self, stdout: str, save: bool = False):
+    def _ask(self, stdout: str, save: bool = False, directory: bool = False):
         fake = type("Done", (), {"stdout": stdout})()
         with patch("itertool.gui.file_dialog.subprocess.run", return_value=fake) as run:
-            return ask_path("docs/a.md", [("Markdown Files", "*.md")], save=save, default_ext=".md"), run
+            chosen = ask_path(
+                "docs/a.md", [("Markdown Files", "*.md")], save=save, default_ext=".md", directory=directory
+            )
+            return chosen, run
+
+    def test_folder_dialog_is_requested_and_its_choice_made_relative(self):
+        chosen, run = self._ask(str(Path.cwd() / "docs"), directory=True)
+        self.assertTrue(json.loads(run.call_args.args[0][-1])["directory"])
+        self.assertEqual(chosen, "docs")
 
     def test_path_inside_cwd_becomes_relative(self):
         chosen, _ = self._ask(str(Path.cwd() / "docs" / "b.md"))

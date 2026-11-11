@@ -1,7 +1,7 @@
 @echo off
 REM Launch the Iter GUI from the project folder:
-REM   launch_gui.bat [input file]
-REM With a file (the "Open with Iter" context menu entry), the GUI starts with it
+REM   launch_gui.bat [input file or folder]
+REM With a file or folder (the "Open with Iter" context menu entry), the GUI starts with it
 REM as the input.
 REM Everything in Iter resolves against the current working directory,
 REM so the GUI must start from the project root (Presets\, config.json, secrets.json).

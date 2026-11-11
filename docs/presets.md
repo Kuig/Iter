@@ -9,10 +9,11 @@ Loaded from / saved to `Presets/<name>.json`. Holds the **task configuration**:
 |---|---|---|
 | `name` | str | Preset display name |
 | `system_prompt` | str | System instruction (overrides AppConfig default when non-empty) |
-| `node_mode` | `"paragraph"` \| `"section"` | Granularity of document splitting |
+| `node_mode` | `"paragraph"` \| `"section"` \| `"file"` | Granularity of document splitting; `"file"` sends each input file whole, as one node |
 | `preprocessing_prompt` | str | Phase 1 prompt (empty = skip) |
 | `node_prompt` | str | Phase 2 prompt (empty = skip) |
 | `postprocessing_prompt` | str | Phase 3 prompt (empty = skip) |
+| `postprocessing_scope` | `"file"` \| `"corpus"` | For a folder input: one Phase 3 call per file *(default)*, or one for the whole folder. See below |
 | `include_preprocessed_context` | bool | Inject Phase 1 result as prior assistant message in Phase 2 calls |
 | `heading_handling` | see below | How to treat `#` heading blocks in Phase 2 |
 | `non_text_handling` | see below | How to treat tables / code blocks in Phase 2 |
@@ -29,6 +30,7 @@ Loaded from / saved to `Presets/<name>.json`. Holds the **task configuration**:
 | `save_preprocessed_separately` | bool | Also write Phase 1 result to `<output>_preprocessed.md` |
 | `save_postprocessed_separately` | bool | Also write Phase 3 result to `<output>_postprocessed.md` |
 | `interlace_input_output` | bool | Save processed nodes interlaced with input nodes *(default: false)* |
+| `output_layout` | `"mirror"` \| `"merged"` | For a folder input: one output file per input file in an output folder *(default)*, or a single output file. See below |
 
 **`heading_handling` values:**
 
@@ -67,6 +69,49 @@ The model has to accept images; the attachment is passed to it as is. With `comp
 original side of the comparison embeds the image together with its Markdown, so it needs a multimodal
 embedding model. The image's bytes are part of the node's progress-file key: a changed image is sent
 again on resume.
+
+In `"file"` mode there are no structural nodes, so the three handling fields have no effect and
+no image is attached.
+
+## Folder input
+
+When the input is a folder, its Markdown files (`.md`, `.markdown`) directly inside it are processed
+in natural order of their names (`2.md` before `10.md`); subfolders are not read. Every file is
+parsed on its own, so no node, section, `merge_next` or `part_of_section` ever spans two files.
+Phase 1 always runs once per file, and each node receives the Phase 1 result of its own file. With
+a single file as input, `postprocessing_scope` and `output_layout` have no effect.
+
+**`postprocessing_scope` values:**
+
+| Value | Behaviour |
+|---|---|
+| `"file"` | One Phase 3 call per file; the attachments are that file's input, Phase 1 result and node results *(default)* |
+| `"corpus"` | One Phase 3 call for the whole folder; each attachment joins every file's part under a `# File: <name>` header |
+
+With `"corpus"`, `postprocess_attach_input` attaches every input file to one call, which rarely
+fits the model's context: the run logs a warning.
+
+**`output_layout` values:**
+
+| Value | The output path is | Content |
+|---|---|---|
+| `"mirror"` | a folder | One file per input file, with the same name, each composed by `output_include_*` from that file's own results *(default)* |
+| `"merged"` | a file | Every input file in order, each under a `# File: <name>` header and composed by `output_include_*`; a file with nothing selected is left out |
+
+In the merged layout, a per-file Phase 3 result follows the node results of its file, and a
+corpus-wide Phase 3 result comes last, after a `---` rule.
+
+Where the other results go:
+
+| Case | Written to |
+|---|---|
+| Mirror, `postprocessing_scope="corpus"` | `<output folder>_postprocessed.md`, beside the folder, whenever Phase 3 ran |
+| Mirror, `save_*_separately` | `<name>_preprocessed.md` / `<name>_postprocessed.md` per file, inside the output folder |
+| Merged, `save_*_separately` | `<output>_preprocessed.md` / `<output>_postprocessed.md`, with every file under its header |
+
+The output may be neither the input folder nor directly inside it: mirrored files would overwrite
+the originals, and any Markdown written there would be read as part of the corpus by the next run.
+The run stops with an error before any AI call.
 
 ## Adding a field
 

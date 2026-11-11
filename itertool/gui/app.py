@@ -63,6 +63,24 @@ _IMAGE_OPTIONS = {
     "part_of_section": "Include in section",
 }
 
+_NODE_MODE_LABELS = {
+    "paragraph": "🔹 Paragraph",
+    "section": "🔸 Section",
+    "file": "📄 File",
+}
+
+_SCOPE_LABELS = {
+    "file": "Per file",
+    "corpus": "Whole folder",
+}
+
+_LAYOUT_LABELS = {
+    "mirror": "Mirror (one output per input file)",
+    "merged": "Merged (single file)",
+}
+
+_DIALOG_BUTTONS = {"open": "📁", "save": "💾", "folder": "🗂️"}
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _list_presets() -> list[str]:
@@ -70,28 +88,39 @@ def _list_presets() -> list[str]:
     return sorted(p.stem for p in _PRESETS_DIR.glob("*.json"))
 
 
-def _file_picker(label: str, key: str, save: bool = False) -> str:
-    """Render a text input + 📁 button for file picking via tkinter.
+def _choice(labels: dict[str, str], label: str) -> str:
+    """Return the value whose display label is label, in a value -> label mapping."""
+    return next(value for value, shown in labels.items() if shown == label)
+
+
+def _file_picker(label: str, key: str, dialogs: tuple[str, ...] = ("open",), help: str | None = None) -> str:
+    """Render a text input with one button per native dialog.
 
     Args:
         label: Text input label.
         key: Unique Streamlit widget key prefix.
-        save: If True, open a save-as dialog instead of open dialog.
+        dialogs: The dialogs offered, one button each: 'open' (📁, an existing
+            file), 'save' (💾, a file to write) or 'folder' (🗂️).
+        help: Tooltip of the text input.
 
     Returns:
-        The selected file path string (may be empty).
+        The selected path string (may be empty).
     """
-    col_input, col_btn = st.columns([5, 1])
+    col_input, *col_buttons = st.columns([5, *([1] * len(dialogs))])
     with col_input:
-        path_val = st.text_input(label, value=st.session_state.get(key, ""), key=f"{key}_input")
+        path_val = st.text_input(label, value=st.session_state.get(key, ""), key=f"{key}_input", help=help)
         st.session_state[key] = path_val
-    with col_btn:
-        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        if st.button("📁" if not save else "💾", key=f"{key}_btn", use_container_width=True):
-            selected = ask_path(st.session_state.get(key, ""), _FILETYPES, save=save, default_ext=".md")
-            if selected:
-                st.session_state[key] = selected
-                st.rerun()
+    for column, dialog in zip(col_buttons, dialogs):
+        with column:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            if st.button(_DIALOG_BUTTONS[dialog], key=f"{key}_btn_{dialog}", use_container_width=True):
+                selected = ask_path(
+                    st.session_state.get(key, ""), _FILETYPES,
+                    save=dialog == "save", default_ext=".md", directory=dialog == "folder",
+                )
+                if selected:
+                    st.session_state[key] = selected
+                    st.rerun()
     return st.session_state.get(key, "")
 
 
@@ -198,6 +227,7 @@ def _init_state() -> None:
         # File paths
         "input_path": _start_input(),
         "output_path": "",
+        "context_path": "",
         # Model settings (bound directly to widget keys)
         "provider": cfg.provider,
         "model_name": cfg.model_name,
@@ -222,6 +252,7 @@ def _init_state() -> None:
         "preprocessing_prompt": "",
         "node_prompt": "",
         "postprocessing_prompt": "",
+        "postprocessing_scope": "file",
         "include_preprocessed_context": False,
         "heading_handling": "report_unprocessed",
         "non_text_handling": "report_unprocessed",
@@ -237,8 +268,11 @@ def _init_state() -> None:
         "save_preprocessed_separately": False,
         "save_postprocessed_separately": False,
         "interlace_input_output": False,
+        "output_layout": "mirror",
         # Widget mapping helper keys (to avoid default value mismatch warnings)
-        "radio_node_mode": "🔹 Paragraph",
+        "radio_node_mode": _NODE_MODE_LABELS["paragraph"],
+        "radio_postprocessing_scope": _SCOPE_LABELS["file"],
+        "radio_output_layout": _LAYOUT_LABELS["mirror"],
         "sel_heading_handling": "Pass through unchanged",
         "sel_non_text_handling": "Pass through unchanged",
         "sel_image_handling": "Pass through unchanged",
@@ -263,7 +297,7 @@ def _load_preset_into_state(preset: Preset) -> None:
 
     # Node mode
     st.session_state.node_mode = preset.node_mode
-    st.session_state.radio_node_mode = "🔹 Paragraph" if preset.node_mode == "paragraph" else "🔸 Section"
+    st.session_state.radio_node_mode = _NODE_MODE_LABELS.get(preset.node_mode, _NODE_MODE_LABELS["paragraph"])
 
     # Prompts
     st.session_state.preprocessing_prompt = preset.preprocessing_prompt
@@ -292,6 +326,10 @@ def _load_preset_into_state(preset: Preset) -> None:
     )
 
     # Phase 3 Options
+    st.session_state.postprocessing_scope = preset.postprocessing_scope
+    st.session_state.radio_postprocessing_scope = _SCOPE_LABELS.get(
+        preset.postprocessing_scope, _SCOPE_LABELS["file"]
+    )
     st.session_state.postprocess_attach_input = preset.postprocess_attach_input
     st.session_state.postprocess_attach_preprocessed = preset.postprocess_attach_preprocessed
     st.session_state.postprocess_attach_results = preset.postprocess_attach_results
@@ -303,6 +341,8 @@ def _load_preset_into_state(preset: Preset) -> None:
     st.session_state.save_preprocessed_separately = preset.save_preprocessed_separately
     st.session_state.save_postprocessed_separately = preset.save_postprocessed_separately
     st.session_state.interlace_input_output = preset.interlace_input_output
+    st.session_state.output_layout = preset.output_layout
+    st.session_state.radio_output_layout = _LAYOUT_LABELS.get(preset.output_layout, _LAYOUT_LABELS["mirror"])
 
 
 def _state_to_preset() -> Preset:
@@ -314,6 +354,7 @@ def _state_to_preset() -> Preset:
         preprocessing_prompt=st.session_state.preprocessing_prompt,
         node_prompt=st.session_state.node_prompt,
         postprocessing_prompt=st.session_state.postprocessing_prompt,
+        postprocessing_scope=st.session_state.postprocessing_scope,
         include_preprocessed_context=st.session_state.include_preprocessed_context,
         heading_handling=st.session_state.heading_handling,
         non_text_handling=st.session_state.non_text_handling,
@@ -329,6 +370,7 @@ def _state_to_preset() -> Preset:
         save_preprocessed_separately=st.session_state.save_preprocessed_separately,
         save_postprocessed_separately=st.session_state.save_postprocessed_separately,
         interlace_input_output=st.session_state.interlace_input_output,
+        output_layout=st.session_state.output_layout,
     )
 
 
@@ -508,16 +550,34 @@ st.markdown(
     "<h1 style='margin-bottom:0'>🔁 Iter <span style='font-size:0.5em;color:gray'>Node Processor</span></h1>",
     unsafe_allow_html=True,
 )
-st.caption("Apply a prompt to every paragraph or section of a Markdown document.")
+st.caption("Apply a prompt to every paragraph or section of a Markdown document, or of a folder of them.")
 
 # ── File I/O ──────────────────────────────────────────────────────────────────
 
 st.subheader("📄 Files")
 col_in, col_out = st.columns(2)
 with col_in:
-    input_path = _file_picker("Input file", "input_path", save=False)
+    input_path = _file_picker(
+        "Input file or folder", "input_path", ("open", "folder"),
+        help="A folder contributes the .md and .markdown files directly inside it.",
+    )
+# A folder in the mirror layout writes one file per input file, into an output folder.
+# The layout is read from its radio, which already holds this rerun's choice.
+mirror_folder = (
+    bool(input_path) and Path(input_path).is_dir()
+    and _choice(_LAYOUT_LABELS, st.session_state.radio_output_layout) == "mirror"
+)
 with col_out:
-    output_path = _file_picker("Output file", "output_path", save=True)
+    if mirror_folder:
+        output_path = _file_picker("Output folder", "output_path", ("folder",))
+    else:
+        output_path = _file_picker("Output file", "output_path", ("save",))
+col_context, _ = st.columns(2)
+with col_context:
+    context_path = _file_picker(
+        "Reference context (optional)", "context_path", ("open",),
+        help="A text file, such as a glossary, appended to the system prompt of every AI call.",
+    )
 
 st.divider()
 
@@ -546,14 +606,14 @@ with st.expander("**Phase 2 - Node Processing** *(core)*", expanded=True):
     )
 
     # Node mode radio
-    mode_labels = ["🔹 Paragraph", "🔸 Section"]
     mode_val = st.radio(
         "Node granularity",
-        options=mode_labels,
+        options=list(_NODE_MODE_LABELS.values()),
         horizontal=True,
         key="radio_node_mode",
+        help="'File' sends each input file whole, as one node.",
     )
-    st.session_state.node_mode = "paragraph" if "Paragraph" in mode_val else "section"
+    st.session_state.node_mode = _choice(_NODE_MODE_LABELS, mode_val)
 
     st.markdown("**Options:**")
     opt_col1, opt_col2 = st.columns(2)
@@ -576,36 +636,36 @@ with st.expander("**Phase 2 - Node Processing** *(core)*", expanded=True):
         )
 
     with opt_col2:
-        heading_labels = list(_HEADING_OPTIONS.values())
-        heading_keys = list(_HEADING_OPTIONS.keys())
-        selected_heading = st.selectbox(
-            "Heading handling",
-            options=heading_labels,
-            key="sel_heading_handling",
-        )
-        st.session_state.heading_handling = heading_keys[heading_labels.index(selected_heading)]
-
-        # part_of_section absorbs a block into the section before it, so it is
-        # meaningless in paragraph mode, where there are no sections.
-        for field_name, all_options, label, help_text in (
-            ("non_text_handling", _NON_TEXT_OPTIONS, "Non-text handling (tables, code)", None),
-            (
-                "image_handling", _IMAGE_OPTIONS, "Image handling",
-                "'Treat as standalone nodes' sends the image file to the model, "
-                "resolved from the input file's folder or downloaded from its URL. "
-                "'Include in section' adds only the Markdown text to the section.",
-            ),
-        ):
-            options = dict(all_options)
-            if st.session_state.node_mode != "section":
-                options.pop("part_of_section")
-            labels = list(options.values())
-            keys = list(options.keys())
-            sel_key = f"sel_{field_name}"
-            if st.session_state.get(sel_key) not in labels:
-                st.session_state[sel_key] = options["report_unprocessed"]
-            selected = st.selectbox(label, options=labels, key=sel_key, help=help_text)
-            st.session_state[field_name] = keys[labels.index(selected)]
+        if st.session_state.node_mode == "file":
+            st.caption("Each node is a whole file, so the heading, non-text and image rules do not apply.")
+        else:
+            # part_of_section absorbs a block into the section before it, so it is
+            # meaningless in paragraph mode, where there are no sections.
+            for field_name, all_options, label, help_text in (
+                ("heading_handling", _HEADING_OPTIONS, "Heading handling", None),
+                ("non_text_handling", _NON_TEXT_OPTIONS, "Non-text handling (tables, code)", None),
+                (
+                    "image_handling", _IMAGE_OPTIONS, "Image handling",
+                    "'Treat as standalone nodes' sends the image file to the model, "
+                    "resolved from the input file's folder or downloaded from its URL. "
+                    "'Include in section' adds only the Markdown text to the section.",
+                ),
+            ):
+                options = dict(all_options)
+                if st.session_state.node_mode != "section":
+                    options.pop("part_of_section", None)
+                labels = list(options.values())
+                keys = list(options.keys())
+                sel_key = f"sel_{field_name}"
+                # A selectbox hidden in file mode loses its widget state; rebuild it
+                # from the field, falling back to the default when the field's value
+                # is not offered in this mode.
+                if st.session_state.get(sel_key) not in labels:
+                    st.session_state[sel_key] = options.get(
+                        st.session_state[field_name], options["report_unprocessed"]
+                    )
+                selected = st.selectbox(label, options=labels, key=sel_key, help=help_text)
+                st.session_state[field_name] = keys[labels.index(selected)]
 
 # ── Phase 3: Postprocessing ───────────────────────────────────────────────────
 
@@ -636,6 +696,18 @@ with st.expander("**Phase 3 - Postprocessing** *(optional)*", expanded=bool(st.s
             "Node results",
             key="postprocess_attach_results",
         )
+
+    scope_val = st.radio(
+        "Scope, for a folder input",
+        options=list(_SCOPE_LABELS.values()),
+        horizontal=True,
+        key="radio_postprocessing_scope",
+        help="One call per input file, or one call for the whole folder "
+             "with every file's attachments joined under its header.",
+    )
+    st.session_state.postprocessing_scope = _choice(_SCOPE_LABELS, scope_val)
+    if st.session_state.postprocessing_scope == "corpus" and st.session_state.postprocess_attach_input:
+        st.warning("Attaching the original input of every file to a single call rarely fits the model's context.")
 
 # ── Output Settings ───────────────────────────────────────────────────────────
 
@@ -679,6 +751,16 @@ with st.expander("**Output Settings**", expanded=True):
         help="For each processed node, output the original text followed by the AI response.",
     )
 
+    layout_val = st.radio(
+        "Layout, for a folder input",
+        options=list(_LAYOUT_LABELS.values()),
+        horizontal=True,
+        key="radio_output_layout",
+        help="Mirror writes one file per input file into the output folder; "
+             "merged writes a single file, each input file under its own header.",
+    )
+    st.session_state.output_layout = _choice(_LAYOUT_LABELS, layout_val)
+
 st.divider()
 
 # ── Run Button ────────────────────────────────────────────────────────────────
@@ -711,7 +793,7 @@ resume_policy = st.session_state.pop("resume_policy", None)
 
 if run_btn or resume_policy:
     if not input_path:
-        st.error("Please provide an input file path.")
+        st.error("Please provide an input file or folder.")
     elif not st.session_state.node_prompt.strip() and not st.session_state.preprocessing_prompt.strip():
         st.warning("At least one of the preprocessing or node prompt must be non-empty.")
     else:
@@ -725,10 +807,11 @@ if run_btn or resume_policy:
                 # are applied here, where they become effective. No-op when unchanged.
                 config.apply_to_client()
                 result = run_iter(
-                    input_file=input_path,
+                    input_path=input_path,
                     output_file=output_path or None,
                     preset=preset,
                     config=config,
+                    context_file=context_path or None,
                     on_mismatch=resume_policy or "ask",
                 )
                 st.session_state.result_preprocessed = result.preprocessed

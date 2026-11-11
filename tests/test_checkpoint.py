@@ -4,6 +4,7 @@ Every AI call is stubbed: no test in this suite may reach call_ai.
 """
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ from itertool.checkpoint import (
     progress_path,
 )
 from itertool.config import AppConfig
+from itertool.corpus import load_corpus
 from itertool.models import Preset
 
 DOC = "Alpha paragraph.\n\nBeta paragraph.\n\nGamma paragraph.\n"
@@ -77,7 +79,7 @@ class _Workspace(unittest.TestCase):
     def _run(self, preset: Preset | None = None, ai: _StubAi | None = None, **kwargs):
         preset = preset or Preset(node_prompt="Condense.")
         with ai or _StubAi() as stub:
-            run_iter_kwargs = dict(input_file=str(self.input), output_file=str(self.output),
+            run_iter_kwargs = dict(input_path=str(self.input), output_file=str(self.output),
                                    preset=preset, config=AppConfig())
             run_iter_kwargs.update(kwargs)
             processor.run_iter(**run_iter_kwargs)
@@ -212,10 +214,11 @@ class TestPostprocessingReuse(_Workspace):
     def _save_postprocessed_without_finishing(self):
         """Leave a progress file holding every phase, as if the output write had failed."""
         path = progress_path(str(self.output), str(self.input), None)
-        cp = Checkpoint(path, fingerprint(DOC, self.PRESET, AppConfig()))
+        corpus = load_corpus(str(self.input))
+        cp = Checkpoint(path, fingerprint(corpus, self.PRESET, AppConfig()))
         with _StubAi():
-            processor._run_node_processing(DOC, self.PRESET, AppConfig(), "", cp)
-        cp.record_postprocessed("[SAVED REVIEW]", 1.0)
+            processor._run_node_processing(corpus, self.PRESET, AppConfig(), {}, cp)
+        cp.record_postprocessed("doc.md", "[SAVED REVIEW]", 1.0)
 
     def test_saved_phase_three_is_reused_when_no_node_was_redone(self):
         self._save_postprocessed_without_finishing()
@@ -258,6 +261,88 @@ class TestImageNodeKeys(_Workspace):
         stub = self._run(self.PRESET)
         self.assertEqual(len(stub.prompts), 1)
         self.assertTrue(stub.prompts[0].startswith("Review."))
+
+
+class TestFormatChange(_Workspace):
+    """A progress file of another format cannot be read back, so the run starts over."""
+
+    def test_old_format_is_discarded_without_asking(self):
+        self._interrupted_run(fail_on=2)
+        lines = self.progress.read_text(encoding="utf-8").splitlines()
+        header = json.loads(lines[0])
+        header["fingerprint"]["version"] = 1
+        self.progress.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
+        stub = self._run()
+        self.assertEqual(len(stub.prompts), 3)
+
+
+class TestContextChange(_Workspace):
+    """The reference context is part of what a saved run was computed with."""
+
+    def test_changed_context_asks(self):
+        context = self.dir / "glossary.md"
+        context.write_text("First.\n", encoding="utf-8")
+        with self.assertRaises(ConnectionError):
+            self._run(ai=_StubAi(fail_on=2), context_file=str(context))
+        context.write_text("Second.\n", encoding="utf-8")
+        with self.assertRaises(CheckpointMismatchError) as ctx:
+            self._run(context_file=str(context))
+        self.assertEqual(ctx.exception.differences, ["reference context"])
+
+
+class TestFolderResume(_Workspace):
+    """A folder run resumes per file: an edited file redoes only its own work."""
+
+    PRESET = Preset(preprocessing_prompt="Outline.", node_prompt="Condense.",
+                    postprocessing_prompt="Review.")
+
+    def setUp(self):
+        super().setUp()
+        self.docs = self.dir / "docs"
+        self.docs.mkdir()
+        (self.docs / "a.md").write_text("Alpha.\n", encoding="utf-8")
+        (self.docs / "b.md").write_text("Beta.\n", encoding="utf-8")
+        self.output = self.dir / "out"
+        self.progress = self.output.with_name(self.output.name + PROGRESS_SUFFIX)
+
+    def _run_folder(self, ai: _StubAi | None = None, **kwargs):
+        return self._run(self.PRESET, ai, input_path=str(self.docs), **kwargs)
+
+    def _interrupted_at_the_last_call(self):
+        """Stop on the last call: Phase 3 of b.md, after Phase 3 of a.md was saved."""
+        with self.assertRaises(ConnectionError):
+            # Order: pre a, pre b, node a, node b, post a, post b.
+            self._run_folder(_StubAi(fail_on=6))
+
+    def test_resumed_run_calls_the_ai_only_for_what_is_missing(self):
+        with self.assertRaises(ConnectionError):
+            self._run_folder(_StubAi(fail_on=4))
+        stub = self._run_folder()
+        self.assertEqual(len(stub.prompts), 3)
+        self.assertTrue(stub.prompts[0].startswith("Condense.\n\nBeta."))
+        self.assertFalse(self.progress.exists())
+        self.assertTrue((self.output / "a.md").exists())
+
+    def test_edited_file_redoes_its_own_phases_only(self):
+        self._interrupted_at_the_last_call()
+        (self.docs / "b.md").write_text("Gamma.\n", encoding="utf-8")
+        stub = self._run_folder(on_mismatch="continue")
+        # Phase 1, the node and Phase 3 of b.md; a.md is restored, its Phase 3 included.
+        self.assertEqual(len(stub.prompts), 3)
+        self.assertEqual(stub.prompts[0], "Outline.\n\nGamma.\n")
+        self.assertEqual(stub.prompts[1], "Condense.\n\nGamma.")
+        self.assertTrue(stub.prompts[2].startswith("Review."))
+
+    def test_corpus_phase_three_is_redone_when_any_node_was(self):
+        preset = Preset(node_prompt="Condense.", postprocessing_prompt="Review.",
+                        postprocessing_scope="corpus")
+        with self.assertRaises(ConnectionError):
+            # 2 nodes + 1 corpus post: the run stops at the post.
+            self._run(preset, _StubAi(fail_on=3), input_path=str(self.docs))
+        (self.docs / "b.md").write_text("Gamma.\n", encoding="utf-8")
+        stub = self._run(preset, input_path=str(self.docs), on_mismatch="continue")
+        self.assertEqual(len(stub.prompts), 2)
+        self.assertTrue(stub.prompts[-1].startswith("Review."))
 
 
 if __name__ == "__main__":

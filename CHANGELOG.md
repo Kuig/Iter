@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A folder can be the input.** Its Markdown files (`.md`, `.markdown`) directly inside it are
+  processed in natural order of their names; subfolders are not read. Each file is parsed on its
+  own, so no node, section, `merge_next` or `part_of_section` spans two files, and each file gets
+  its own Phase 1. An output that is the input folder, or lies directly inside it, is refused
+  before any AI call.
+- `postprocessing_scope` preset field: for a folder, one Phase 3 call per file (`file`, the
+  default) or one for the whole folder (`corpus`), whose attachments join every file under a
+  `# File: <name>` header. Attaching the input with `corpus` logs a warning.
+- `output_layout` preset field: for a folder, one output file per input file in an output folder
+  (`mirror`, the default) or a single file with each input under its header (`merged`). In the
+  merged layout a per-file Phase 3 result follows that file's node results.
+- `node_mode="file"`: each input file is sent whole, as one node.
+- Reference context: `run_iter()` takes a `context_file` whose text is appended to the system
+  prompt of every AI call, under `=== REFERENCE CONTEXT ===`. A changed context counts as a
+  change of the run on resume.
+- `ProcessingResult.files` holds the results of each input file, and
+  `itertool.processor.default_output_path()` names the output of an input.
+- CLI: `iter run --input` accepts a folder, `--context FILE` sets the reference context,
+  `--node-mode` accepts `file`, and `--output` is optional: it defaults to
+  `<name>_processed<ext>` next to a file, and for a folder to `<folder>_processed` beside it
+  (mirror layout) or `<folder>_processed.md` (merged layout).
+- MCP: both tools take an optional `context_file`.
+- GUI: the input takes a file (📁) or a folder (🗂️), and `iter gui` a folder too; the output
+  asks for a folder when the input is a folder in the mirror layout; a **Reference context**
+  field sets the context file. Phase 2 offers **📄 File** granularity, which hides the three
+  handling menus; Phase 3 has a **Scope** choice and warns when the whole folder's input would
+  be attached to one call; Output Settings has a **Layout** choice.
+- The Explorer context menu entries **Process with Iter...** and **Open with Iter** also appear
+  on folders. Rerun `generate_registry_files.ps1` and merge `register.reg` to get them.
 - **Open with Iter** in the Explorer context menu of `.md` and `.markdown` files: it opens the
   GUI with the file already set as the input. `iter gui` takes an optional input file for the
   same purpose, and so does `Windows Integration/launch_gui.bat`.
@@ -21,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `run_iter()` takes `input_path` instead of `input_file`, since the input can be a folder.
+  The MCP tool `iter_process_file` is renamed `iter_process_path`, and its `input_file`
+  parameter `input_path`.
+- On resume, a document edited since the progress file was written gets a new Phase 1, instead
+  of reusing the saved one.
+- The progress file format changed. A progress file written by an earlier version is discarded
+  with a warning and the run starts over, without asking.
 - `non_text_handling` now covers only tables and code blocks. Presets that relied on it for
   images get the `image_handling` default, `report_unprocessed`.
 - A block holding only a link, `[text](url)`, is now text instead of an image node.
@@ -28,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   renamed presets disappear. The script stops with an error above 16 presets, the most Explorer
   shows in a submenu.
 - The console window of a preset run from the Explorer menu stays open only when the run fails.
+- `run_preset.cmd` no longer names the output itself: it uses the CLI default, so the output of
+  a file is still `<name>_processed<ext>`, and a folder gets the default of its layout.
 
 ### Fixed
 

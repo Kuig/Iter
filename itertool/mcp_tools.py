@@ -102,8 +102,8 @@ def register_tools(mcp: FastMCP) -> None:
     """
 
     @mcp.tool()
-    def iter_process_file(
-        input_file: str,
+    def iter_process_path(
+        input_path: str,
         output_file: str | None = None,
         node_prompt: str | None = None,
         node_mode: str | None = None,
@@ -112,16 +112,21 @@ def register_tools(mcp: FastMCP) -> None:
         compute_similarity: bool | None = None,
         config_file: str | None = None,
         preset_file: str | None = None,
+        context_file: str | None = None,
         on_mismatch: str | None = None,
     ) -> str:
-        """Process a Markdown file node by node using Iter.
+        """Process a Markdown file, or a folder of Markdown files, node by node using Iter.
 
         Args:
-            input_file: Absolute path to the input Markdown file.
-            output_file: Optional path where the main output will be saved.
-                If None, the result text is returned directly.
-            node_prompt: Prompt applied to each node (paragraph or section).
-            node_mode: Node granularity: 'paragraph' or 'section'.
+            input_path: Absolute path to the input Markdown file, or to a folder:
+                its .md and .markdown files directly inside it are processed in
+                natural order of their names.
+            output_file: Optional path where the main output will be saved: a
+                file, or a folder for a folder input when the preset's
+                output_layout is 'mirror'. If None, the result text is returned
+                directly, each file of a folder under a '# File: <name>' header.
+            node_prompt: Prompt applied to each node (paragraph, section or file).
+            node_mode: Node granularity: 'paragraph', 'section' or 'file'.
             preprocessing_prompt: Optional prompt for a full-document preprocessing pass.
             postprocessing_prompt: Optional prompt for a full-results postprocessing pass.
             compute_similarity: Whether to compute cosine similarity per node.
@@ -130,6 +135,8 @@ def register_tools(mcp: FastMCP) -> None:
                 implicitly resolved configuration may not be the intended one.
             preset_file: Optional absolute path to a preset JSON file. Supplies
                 the baseline settings; the arguments above override it.
+            context_file: Optional absolute path to a reference context file
+                (e.g. a glossary), appended to the system prompt of every AI call.
             on_mismatch: Only needed after this tool reported a progress file
                 from a different run: 'continue' keeps its saved results,
                 'restart' discards them.
@@ -149,14 +156,15 @@ def register_tools(mcp: FastMCP) -> None:
                 compute_similarity,
             )
             result = run_iter(
-                input_file=input_file,
+                input_path=input_path,
                 output_file=output_file,
                 preset=preset,
                 config=config,
+                context_file=context_file,
                 on_mismatch=on_mismatch or "ask",
             )
             if output_file:
-                return f"Done: {input_file} processed to {output_file}."
+                return f"Done: {input_path} processed to {output_file}."
             return result.postprocessed or result.results or result.preprocessed
         except CheckpointMismatchError as exc:
             return _mismatch_reply(exc)
@@ -174,6 +182,7 @@ def register_tools(mcp: FastMCP) -> None:
         compute_similarity: bool | None = None,
         config_file: str | None = None,
         preset_file: str | None = None,
+        context_file: str | None = None,
         on_mismatch: str | None = None,
     ) -> str:
         """Process a Markdown text string node by node using Iter.
@@ -182,8 +191,9 @@ def register_tools(mcp: FastMCP) -> None:
             text: The Markdown text to process.
             output_file: Optional path to save the processed result.
                 If None, the result text is returned directly.
-            node_prompt: Prompt applied to each node (paragraph or section).
-            node_mode: Node granularity: 'paragraph' or 'section'.
+            node_prompt: Prompt applied to each node (paragraph, section, or
+                the whole text as one node).
+            node_mode: Node granularity: 'paragraph', 'section' or 'file'.
             preprocessing_prompt: Optional prompt for a full-document preprocessing pass.
             postprocessing_prompt: Optional prompt for a full-results postprocessing pass.
             compute_similarity: Whether to compute cosine similarity per node.
@@ -192,6 +202,8 @@ def register_tools(mcp: FastMCP) -> None:
                 implicitly resolved configuration may not be the intended one.
             preset_file: Optional absolute path to a preset JSON file. Supplies
                 the baseline settings; the arguments above override it.
+            context_file: Optional absolute path to a reference context file
+                (e.g. a glossary), appended to the system prompt of every AI call.
             on_mismatch: Only needed after this tool reported a progress file
                 from a different run: 'continue' keeps its saved results,
                 'restart' discards them.
@@ -215,6 +227,7 @@ def register_tools(mcp: FastMCP) -> None:
                 output_file=output_file,
                 preset=preset,
                 config=config,
+                context_file=context_file,
                 on_mismatch=on_mismatch or "ask",
             )
             if output_file:

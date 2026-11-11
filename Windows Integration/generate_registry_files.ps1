@@ -10,8 +10,9 @@ if (-not (Test-Path $IterPath)) {
 }
 
 # Every preset entry runs run_preset.cmd, which calls "iter run" from the project folder
-# and writes "<name>_processed<ext>" next to the source file.
-# "Open with Iter" runs launch_gui.bat, which opens the GUI with the file as its input.
+# and writes the CLI's default output: "<name>_processed<ext>" next to a file, and for a
+# folder "<folder>_processed" or "<folder>_processed.md" beside it, by the preset's layout.
+# "Open with Iter" runs launch_gui.bat, which opens the GUI with the file or folder as its input.
 $EscapedRunPath = $RunPath.Replace("\", "\\")
 $EscapedGuiPath = $GuiPath.Replace("\", "\\")
 
@@ -35,11 +36,14 @@ $RegisterContent = "Windows Registry Editor Version 5.00`r`n"
 # Generate unregister.reg
 $UnregisterContent = "Windows Registry Editor Version 5.00`r`n"
 
-$SupportedExtensions = @(".md", ".markdown")
+# The menus appear on Markdown files and on folders, whose Markdown files form the input.
+$Shells = @(
+    "HKEY_CLASSES_ROOT\SystemFileAssociations\.md\shell",
+    "HKEY_CLASSES_ROOT\SystemFileAssociations\.markdown\shell",
+    "HKEY_CLASSES_ROOT\Directory\shell"
+)
 
-foreach ($Ext in $SupportedExtensions) {
-    $Shell = "HKEY_CLASSES_ROOT\SystemFileAssociations\$Ext\shell"
-
+foreach ($Shell in $Shells) {
     # Remove the entries of an earlier registration, so deleted or renamed presets disappear,
     # then write the "Process with Iter..." cascading menu
     $RegisterContent += "`r`n[-$Shell\Iter]`r`n"
@@ -60,13 +64,13 @@ foreach ($Ext in $SupportedExtensions) {
         $Counter++
     }
 
-    # The entry that opens the GUI on the file
+    # The entry that opens the GUI on the file or folder
     $RegisterContent += "`r`n[-$Shell\IterGui]`r`n"
     $RegisterContent += "`r`n[$Shell\IterGui]`r`n`"MUIVerb`"=`"Open with Iter`"`r`n"
     $RegisterContent += "`r`n[$Shell\IterGui\command]`r`n"
     $RegisterContent += '@="\"' + $EscapedGuiPath + '\" \"%1\""' + "`r`n"
 
-    # Write the unregister clean keys for this extension
+    # Write the unregister clean keys for this menu location
     $UnregisterContent += "`r`n[-$Shell\Iter]`r`n"
     $UnregisterContent += "`r`n[-$Shell\IterGui]`r`n"
 }
