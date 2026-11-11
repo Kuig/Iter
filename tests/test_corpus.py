@@ -9,6 +9,8 @@ from pathlib import Path
 import itertool.logger as logger
 from itertool.corpus import check_output_location, load_corpus, natural_sort_key, parse_corpus
 
+BOM = chr(0xFEFF)  # the UTF-8 byte order mark some editors write at the start of a file
+
 
 def setUpModule():
     logger.set_backend("silent")
@@ -68,6 +70,18 @@ class TestLoadCorpus(_Folder):
         corpus = load_corpus(None, "Alpha.")
         self.assertEqual(corpus.root, Path.cwd())
         self.assertEqual(corpus.files[0].name, "")
+
+    def test_byte_order_mark_is_dropped_from_files(self):
+        path = self._write("doc.md", BOM + "# Title\n\nText.\n")
+        self._write("other.md", BOM + "# Other\n")
+        for corpus in (load_corpus(str(path)), load_corpus(str(self.docs))):
+            with self.subTest(is_folder=corpus.is_folder):
+                self.assertFalse(any(f.text.startswith(BOM) for f in corpus.files))
+                self.assertEqual(parse_corpus(corpus, "section")[0].node_type, "heading")
+
+    def test_byte_order_mark_is_dropped_from_raw_text(self):
+        corpus = load_corpus(None, BOM + "# Title\n")
+        self.assertEqual(corpus.files[0].text, "# Title\n")
 
     def test_missing_path_is_an_error(self):
         with self.assertRaises(ValueError):

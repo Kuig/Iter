@@ -38,7 +38,7 @@ from itertool.models import (
     cosine_similarity,
     get_similarity_indicator,
 )
-from itertool.markdown_utils import clean_ai_response
+from itertool.markdown_utils import clean_ai_response, has_text, heading_text
 from itertool.output import join_by_file, write_outputs
 import itertool.logger as logger
 
@@ -306,6 +306,9 @@ def _build_separator(node: Node, similarity: float | None, show: bool) -> str:
 def _handling_for(node: Node, preset: Preset) -> str:
     """Return the handling rule that governs a structural (non-text) node.
 
+    A 'rule' node never reaches this function: _process_node always passes
+    it through, and _absorb_into_sections never absorbs it.
+
     Args:
         node: A node whose node_type is not 'text'.
         preset: Active preset (reads the three handling fields).
@@ -332,7 +335,9 @@ def _process_node(
     """Process a single node through the AI with optional similarity computation.
 
     Applies heading/non-text handling rules before deciding whether to call AI,
-    and restores the node from the progress file when it was done before.
+    and restores the node from the progress file when it was done before. A
+    thematic break, and any node with no letter or digit and no attached
+    file, is passed through without an AI call: there is nothing to process.
 
     Args:
         node: The node to process.
@@ -346,6 +351,10 @@ def _process_node(
     Returns:
         A NodeResult with the output and optional similarity score.
     """
+    if node.node_type == "rule":
+        logger.log_action("  Thematic break, passed through unchanged")
+        return NodeResult(node=node, output=node.content, was_processed=False)
+
     is_structural = node.node_type != "text"
 
     # --- Determine handling for structural (non-text) nodes ---
@@ -381,7 +390,11 @@ def _process_node(
             logger.log_action("  No section to join, passed through unchanged")
             return NodeResult(node=node, output=node.content, was_processed=False)
 
-    saved = state.checkpoint.nodes.get(key) if state.checkpoint else None
+    if image_path is None and not has_text(node.content):
+        logger.log_action("  No text to process, passed through unchanged")
+        return NodeResult(node=node, output=node.content, was_processed=False)
+
+    saved =state.checkpoint.nodes.get(key) if state.checkpoint else None
     if saved is not None:
         logger.log_action("  Restored from the progress file")
         return NodeResult(
@@ -453,7 +466,7 @@ def _merge_headings(nodes: list[Node], preset: Preset) -> list[Node]:
                 index=node.index,
                 node_type="text",
                 content=f"{node.content}\n\n{nodes[i + 1].content}",
-                heading_prefix=node.content.strip(),
+                heading_prefix=heading_text(node.content),
                 source=node.source,
             ))
             i += 2
@@ -467,8 +480,9 @@ def _absorb_into_sections(nodes: list[Node], preset: Preset) -> list[Node]:
     """Pre-pass for part_of_section: absorb the blocks that follow a section into it.
 
     Only blocks whose own handling field asks for part_of_section are absorbed,
-    and only in section mode. A block with no section before it in the same
-    file is left alone; _process_node passes it through.
+    and only in section mode. A heading or a thematic break ends the section. A
+    block with no section before it in the same file is left alone;
+    _process_node passes it through.
 
     Args:
         nodes: The node list after _merge_headings().
@@ -489,7 +503,7 @@ def _absorb_into_sections(nodes: list[Node], preset: Preset) -> list[Node]:
             combined_content = node.content
             while (
                 j + 1 < len(nodes)
-                and nodes[j + 1].node_type not in ("text", "heading")
+                and nodes[j + 1].node_type not in ("text", "heading", "rule")
                 and nodes[j + 1].source == node.source
                 and _handling_for(nodes[j + 1], preset) == "part_of_section"
             ):
@@ -795,7 +809,7 @@ def run_iter(
     # --- Load input ---
     corpus = load_corpus(input_path, input_text)
     check_output_location(corpus, output_path, preset.output_layout)
-    context = Path(context_file).read_text(encoding="utf-8") if context_file else ""
+    context = Path(context_file).read_text(encoding="utf-8-sig") if context_file else ""
 
     logger.log_separator()
     logger.log_info(f"Iter - provider: {config.provider} | model: {config.model_name}")

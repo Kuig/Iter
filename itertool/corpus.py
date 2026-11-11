@@ -16,6 +16,9 @@ from itertool.models import Corpus, Node, SourceFile
 
 MARKDOWN_SUFFIXES = (".md", ".markdown")
 
+# The UTF-8 byte order mark some editors write at the start of a file.
+_BOM = "\N{BYTE ORDER MARK}"
+
 
 def natural_sort_key(name: str) -> list:
     """Sort key that orders the digits in a name by value: '2.md' before '10.md'."""
@@ -33,19 +36,22 @@ def load_corpus(input_path: str | None = None, input_text: str | None = None) ->
 
     Returns:
         The corpus: one file for raw text or a file path, one per Markdown
-        file for a folder, in natural order of their names.
+        file for a folder, in natural order of their names. A leading UTF-8
+        byte order mark is dropped from every text, so it cannot hide the
+        first heading from the parser.
 
     Raises:
         ValueError: If neither input is usable, or the folder holds no Markdown file.
     """
     if input_text is not None:
-        return Corpus(root=Path.cwd(), files=[SourceFile(name="", text=input_text)])
+        text = input_text.removeprefix(_BOM)
+        return Corpus(root=Path.cwd(), files=[SourceFile(name="", text=text)])
     path = Path(input_path) if input_path is not None else None
     if path is not None and path.is_file():
         logger.log_action(f"Loading document from: {input_path}")
         return Corpus(
             root=path.resolve().parent,
-            files=[SourceFile(name=path.name, text=path.read_text(encoding="utf-8"))],
+            files=[SourceFile(name=path.name, text=path.read_text(encoding="utf-8-sig"))],
         )
     if path is not None and path.is_dir():
         names = sorted(
@@ -57,7 +63,7 @@ def load_corpus(input_path: str | None = None, input_text: str | None = None) ->
         logger.log_action(f"Loading {len(names)} documents from: {input_path}")
         return Corpus(
             root=path.resolve(),
-            files=[SourceFile(name=n, text=(path / n).read_text(encoding="utf-8")) for n in names],
+            files=[SourceFile(name=n, text=(path / n).read_text(encoding="utf-8-sig")) for n in names],
             is_folder=True,
         )
     raise ValueError(f"Provide a valid input_text or an existing input_path. Got: {input_path}")

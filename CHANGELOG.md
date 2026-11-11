@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Thematic breaks (`---`, `***`, `___`) are no longer sent to the AI as text nodes, where the
+  model answered with requests such as "please provide the text". They are a new `rule` node type:
+  a section boundary, always passed through unchanged whatever the handling fields say.
+- A node with no letter or digit (and no attached image) is never sent to the AI; it is passed
+  through unchanged.
+- Setext headings (lines underlined with `===` or `---`) are recognised as headings and follow
+  `heading_handling`; before, they were sent to the AI as text.
+- A UTF-8 byte order mark at the start of an input file, of raw input text or of the context file
+  is dropped on load; before, it made the first heading of the file a text node.
+
 ## [0.3.0] - 2026-11-11
 
 ### Added

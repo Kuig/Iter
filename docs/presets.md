@@ -73,6 +73,12 @@ again on resume.
 In `"file"` mode there are no structural nodes, so the three handling fields have no effect and
 no image is attached.
 
+A thematic break (`---`, `***`, `___` alone on a line) is a node of its own, which also ends a
+section: it is always passed through unchanged, whatever the three handling fields say. A heading
+underlined with `===` or `---` (setext) is a heading like `# Title` and follows `heading_handling`.
+In every mode, a node with no letter or digit (and no attached image) is never sent to the AI; it
+is passed through unchanged.
+
 ## Folder input
 
 When the input is a folder, its Markdown files (`.md`, `.markdown`) directly inside it are processed

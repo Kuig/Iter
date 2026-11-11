@@ -91,7 +91,8 @@ above. What follows are the models that are not user-configurable.
 The input of a run, built by `corpus.load_corpus()`: a list of `SourceFile` (`name`, `text`), the
 `root` folder relative image paths resolve against, and `is_folder`. A single document or raw
 text is a corpus of one; only a folder input sets `is_folder`, which turns on the file headers and
-the output layout.
+the output layout. A leading UTF-8 byte order mark is dropped from every text on load (and from the
+context file), so it cannot hide a file's first heading from the parser.
 
 #### `Node`
 A single unit of text extracted from the document.
@@ -99,7 +100,7 @@ A single unit of text extracted from the document.
 | Field | Meaning |
 |---|---|
 | `index` | 1-based sequential number |
-| `node_type` | `"text"`, `"heading"`, `"code"`, `"table"`, `"image"` |
+| `node_type` | `"text"`, `"heading"`, `"code"`, `"table"`, `"image"`, `"rule"` |
 | `content` | Raw text of the block |
 | `heading_prefix` | Most recent heading above this block (used to build `node_id`) |
 | `source` | Name of the input file the node comes from |
@@ -125,19 +126,29 @@ For a folder, the four aggregate fields join the per-file results, each under a
 ### Markdown parsing (`markdown_utils.py`)
 
 The raw document is first split into **logical blocks** by blank lines, with fenced
-code blocks kept intact (blank lines inside ` ``` ` fences are not split points).
+code blocks kept intact (blank lines inside ` ``` ` fences are not split points). A setext
+underline (`===` or `---` right below paragraph lines) also ends a block, so
+`Para\n---\nMore` is a heading followed by a paragraph, as CommonMark reads it.
 
 #### Paragraph mode
 Each block becomes exactly one `Node`. Block type is classified with:
 
-- `is_header()` - starts with `#`
+- `is_header()` - starts with `#` (ATX), or is paragraph lines underlined with `=` or `-`
+  (setext). `heading_text()` gives its one-line label for `heading_prefix` and node IDs.
 - `is_table()` - first two lines contain `|` and `-`
 - `is_code_block()` - starts with ` ``` `
 - `is_image_only()` - matches a single `![…](…)` alone on a line; a block holding only a
   link is text. `image_source()` extracts its path or URL for `image_handling`.
+- `is_thematic_break()` - a single line of three or more of the same `-`, `*` or `_`
+  (`---`, `***`, `- - -`): a `rule` node.
+
+A `rule` node is always passed through unchanged, whatever the handling fields say, and
+`part_of_section` never absorbs it. Separately, `_process_node` never sends the AI a node with
+no letter or digit (`has_text()`) and no attached file: it passes it through, since a model
+asked to process `---` or an empty code block answers with a request for text.
 
 #### Section mode
-Structural blocks (headings, code, tables, images) flush the current text buffer
+Structural blocks (headings, code, tables, images, rules) flush the current text buffer
 as a single `Node(node_type="text")`, then are emitted themselves as individual
 structural nodes. The result is alternating text-section nodes and structural nodes.
 This means a section containing multiple paragraphs is sent to the AI as one combined
@@ -182,6 +193,7 @@ corpus (one document, or the Markdown files of a folder)
 │    apply heading/non-text/image │
 │    rule                         │
 │    → discard / passthrough      │
+│    rules / no text → passthrough│
 │    → call_ai(node_prompt        │
 │               + node.content,   │
 │               messages=[preproc]│  (its file's; if include_preprocessed_context)

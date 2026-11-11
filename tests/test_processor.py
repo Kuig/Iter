@@ -19,6 +19,7 @@ from itertool.models import Corpus, Node, Preset, SourceFile
 
 FENCE = "```"
 EM_DASH = "\u2014"  # what the separator used before 0.1.2, and must never contain again
+BOM = chr(0xFEFF)  # the UTF-8 byte order mark some editors write at the start of a file
 
 
 def _corpus(text: str, root: Path | None = None) -> Corpus:
@@ -358,6 +359,80 @@ class TestOtherHandlingRules(unittest.TestCase):
         heading = [r for r in results if r.node.node_type == "heading"][0]
         self.assertTrue(heading.was_processed)
         self.assertEqual(heading.output, "[AI]")
+
+
+class TestContentFreeNodes(unittest.TestCase):
+    """A thematic break, or any node without a letter or digit, never reaches the AI."""
+
+    def _run(self, doc: str, **preset_fields):
+        preset = Preset(
+            node_prompt="p",
+            **{"node_mode": "section", "show_similarity_separator": False, **preset_fields},
+        )
+        with _StubAi() as ai:
+            results, outputs = processor._run_node_processing(_corpus(doc), preset, AppConfig(), {})
+        return results, outputs[""], ai.prompts
+
+    def test_rules_after_code_and_table_are_passed_through(self):
+        doc = FENCE + "\nls\n" + FENCE + "\n\n---\n\n| a |\n|---|\n\n***\n\n## End\n"
+        results, output, prompts = self._run(doc)
+        self.assertEqual(prompts, [])
+        rules = [r for r in results if r.node.node_type == "rule"]
+        self.assertEqual([r.output for r in rules], ["---", "***"])
+        self.assertFalse(any(r.was_processed for r in rules))
+        self.assertIn("\n\n---\n\n", output)
+
+    def test_rule_ignores_every_handling_field(self):
+        doc = "Text.\n\n---\n\nMore.\n"
+        for handling in ("discard", "standalone_nodes", "part_of_section"):
+            with self.subTest(handling=handling):
+                _, output, prompts = self._run(doc, non_text_handling=handling)
+                self.assertEqual(len(prompts), 2)
+                self.assertFalse(any("---" in p for p in prompts))
+                self.assertEqual(output, "[AI]\n\n---\n\n[AI]")
+
+    def test_file_mode_document_without_text_makes_no_call(self):
+        _, output, prompts = self._run("---\n", node_mode="file")
+        self.assertEqual(prompts, [])
+        self.assertEqual(output, "---")
+
+    def test_standalone_empty_code_block_makes_no_call(self):
+        _, _, prompts = self._run(FENCE + "\n" + FENCE + "\n", non_text_handling="standalone_nodes")
+        self.assertEqual(prompts, [])
+
+    def test_standalone_heading_without_text_makes_no_call(self):
+        _, _, prompts = self._run("#\n\nText.\n", heading_handling="standalone_nodes")
+        self.assertEqual(prompts, ["p\n\nText."])
+
+
+class TestSetextHeadingInPipeline(unittest.TestCase):
+    """A setext heading follows heading_handling and keeps node IDs on one line."""
+
+    DOC = "Title\n=====\n\nBody.\n"
+
+    def _run(self, **preset_fields):
+        preset = Preset(
+            node_prompt="p",
+            node_mode="paragraph",
+            **{"show_similarity_separator": False, **preset_fields},
+        )
+        with _StubAi() as ai:
+            results, outputs = processor._run_node_processing(_corpus(self.DOC), preset, AppConfig(), {})
+        return results, outputs[""], ai.prompts
+
+    def test_passed_through_with_its_underline(self):
+        _, output, prompts = self._run(heading_handling="report_unprocessed")
+        self.assertEqual(prompts, ["p\n\nBody."])
+        self.assertEqual(output, "Title\n=====\n\n[AI]")
+
+    def test_merge_next_merges_it_into_the_text(self):
+        results, _, prompts = self._run(heading_handling="merge_next")
+        self.assertEqual(prompts, ["p\n\nTitle\n=====\n\nBody."])
+        self.assertEqual(results[0].node.node_id, "1 - Title")
+
+    def test_separator_stays_on_one_line(self):
+        _, output, _ = self._run(heading_handling="discard", show_similarity_separator=True)
+        self.assertEqual(output, "# §2 - Title\n\n[AI]")
 
 
 class TestImageHandling(unittest.TestCase):
@@ -709,6 +784,11 @@ class TestReferenceContext(_FolderRun):
     def test_missing_file_stops_the_run(self):
         with self.assertRaises(FileNotFoundError):
             self._run(self.PRESET, context_file="absent.md")
+
+    def test_byte_order_mark_is_dropped(self):
+        (self.dir / "bom.md").write_text(BOM + "GLOSSARY\n", encoding="utf-8")
+        _, ai = self._run(self.PRESET, context_file="bom.md")
+        self.assertEqual({c["system"] for c in ai.calls}, {"=== REFERENCE CONTEXT ===\nGLOSSARY\n"})
 
 
 if __name__ == "__main__":

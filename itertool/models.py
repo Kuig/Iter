@@ -165,7 +165,7 @@ class Node:
 
     Attributes:
         index: 1-based sequential node index.
-        node_type: Block type: 'text', 'heading', 'code', 'table', 'image'.
+        node_type: Block type: 'text', 'heading', 'code', 'table', 'image', 'rule'.
         content: Raw text content of the node.
         heading_prefix: Nearest heading text above this node, used for node IDs.
         source: Name of the input file the node comes from (SourceFile.name).

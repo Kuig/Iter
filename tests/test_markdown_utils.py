@@ -7,6 +7,8 @@ from itertool.markdown_utils import (
     _split_into_raw_blocks,
     classify_block,
     clean_ai_response,
+    has_text,
+    heading_text,
     image_source,
     parse_into_paragraphs,
     parse_into_sections,
@@ -38,7 +40,7 @@ class TestSplitIntoRawBlocks(unittest.TestCase):
 
 
 class TestClassifyBlock(unittest.TestCase):
-    """Every block gets exactly one of the five tags."""
+    """Every block gets exactly one of the six tags."""
 
     def test_heading(self):
         self.assertEqual(classify_block("## Title"), "heading")
@@ -60,6 +62,78 @@ class TestClassifyBlock(unittest.TestCase):
 
     def test_two_images_in_one_block_are_text(self):
         self.assertEqual(classify_block("![a](a.png) and ![b](b.png)"), "text")
+
+
+class TestThematicBreak(unittest.TestCase):
+    """A thematic break is a rule node, never text the AI is asked to process."""
+
+    def test_rules(self):
+        for block in ("---", "***", "___", "- - -", "*****", " _ _ _ "):
+            with self.subTest(block=block):
+                self.assertEqual(classify_block(block), "rule")
+
+    def test_too_short_or_mixed_is_text(self):
+        for block in ("--", "-*-", "- item", "*emphasis*"):
+            with self.subTest(block=block):
+                self.assertEqual(classify_block(block), "text")
+
+    def test_section_mode_splits_at_a_rule(self):
+        nodes = parse_into_sections("One.\n\n---\n\nTwo.")
+        self.assertEqual([n.node_type for n in nodes], ["text", "rule", "text"])
+
+    def test_rule_between_code_and_heading_is_not_text(self):
+        doc = FENCE + "bash\nls\n" + FENCE + "\n\n---\n\n## Next"
+        nodes = parse_into_sections(doc)
+        self.assertEqual([n.node_type for n in nodes], ["code", "rule", "heading"])
+
+    def test_rule_after_a_table_is_not_text(self):
+        nodes = parse_into_sections("| a |\n|---|\n| 1 |\n\n---\n\n## Next")
+        self.assertEqual([n.node_type for n in nodes], ["table", "rule", "heading"])
+
+
+class TestSetextHeading(unittest.TestCase):
+    """A line underlined with '=' or '-' is a heading, as CommonMark reads it."""
+
+    def test_underlined_with_equals_or_dashes(self):
+        self.assertEqual(classify_block("Title\n==="), "heading")
+        self.assertEqual(classify_block("Title\n---"), "heading")
+
+    def test_multi_line_heading(self):
+        self.assertEqual(classify_block("Long\ntitle\n="), "heading")
+
+    def test_underline_ends_the_block(self):
+        blocks = _split_into_raw_blocks("Para\n---\nMore text.")
+        self.assertEqual(blocks, ["Para\n---", "More text."])
+        self.assertEqual([classify_block(b) for b in blocks], ["heading", "text"])
+
+    def test_list_followed_by_dashes_is_not_a_heading(self):
+        self.assertEqual(classify_block("- item\n---"), "text")
+
+    def test_code_block_is_not_split(self):
+        code = FENCE + "\nTitle\n---\n" + FENCE
+        self.assertEqual(_split_into_raw_blocks(code), [code])
+
+    def test_heading_text_is_one_line(self):
+        self.assertEqual(heading_text("Long\ntitle\n==="), "Long title")
+        self.assertEqual(heading_text("## Title"), "## Title")
+
+    def test_following_node_id_names_the_heading(self):
+        nodes = parse_into_sections("Title\n=====\n\nBody.")
+        self.assertEqual(nodes[1].node_id, "2 - Title")
+
+
+class TestHasText(unittest.TestCase):
+    """Only content holding a letter or a digit is worth an AI call."""
+
+    def test_letters_and_digits_in_any_script(self):
+        for content in ("Text", "42", "è", "日本"):
+            with self.subTest(content=content):
+                self.assertTrue(has_text(content))
+
+    def test_punctuation_and_markup_only(self):
+        for content in ("", "---", "===", "* * *", "#", "> ", "..."):
+            with self.subTest(content=content):
+                self.assertFalse(has_text(content))
 
 
 class TestImageSource(unittest.TestCase):
