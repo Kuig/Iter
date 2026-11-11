@@ -55,19 +55,19 @@ class TestRunCommand(unittest.TestCase):
     def test_explicit_output_and_context_are_forwarded(self):
         kwargs = self._run_kwargs("--input", "docs", "--output", "out", "--context", "glossary.md")
         self.assertEqual(kwargs["input_path"], "docs")
-        self.assertEqual(kwargs["output_file"], "out")
+        self.assertEqual(kwargs["output_path"], "out")
         self.assertEqual(kwargs["context_file"], "glossary.md")
 
     def test_default_output_of_a_file(self):
         kwargs = self._run_kwargs("--input", str(Path("docs") / "a.md"))
-        self.assertEqual(kwargs["output_file"], str(Path("docs") / "a_processed.md"))
+        self.assertEqual(kwargs["output_path"], str(Path("docs") / "a_processed.md"))
         self.assertIsNone(kwargs["context_file"])
 
     def test_default_output_of_a_folder_follows_the_preset_layout(self):
         mirror = self._run_kwargs("--input", "docs")
         merged = self._run_kwargs("--input", "docs", "--preset", "Merge")
-        self.assertEqual(mirror["output_file"], str(self.dir.resolve() / "docs_processed"))
-        self.assertEqual(merged["output_file"], str(self.dir.resolve() / "docs_processed.md"))
+        self.assertEqual(mirror["output_path"], str(self.dir.resolve() / "docs_processed"))
+        self.assertEqual(merged["output_path"], str(self.dir.resolve() / "docs_processed.md"))
 
     def test_file_node_mode_is_accepted(self):
         kwargs = self._run_kwargs("--input", "docs", "--node-mode", "file")

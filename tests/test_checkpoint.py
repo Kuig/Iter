@@ -79,7 +79,7 @@ class _Workspace(unittest.TestCase):
     def _run(self, preset: Preset | None = None, ai: _StubAi | None = None, **kwargs):
         preset = preset or Preset(node_prompt="Condense.")
         with ai or _StubAi() as stub:
-            run_iter_kwargs = dict(input_path=str(self.input), output_file=str(self.output),
+            run_iter_kwargs = dict(input_path=str(self.input), output_path=str(self.output),
                                    preset=preset, config=AppConfig())
             run_iter_kwargs.update(kwargs)
             processor.run_iter(**run_iter_kwargs)

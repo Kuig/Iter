@@ -58,7 +58,7 @@ def text_key(text: str) -> str:
 
 
 def progress_path(
-    output_file: str | None,
+    output_path: str | None,
     input_path: str | None,
     input_text: str | None,
 ) -> Path:
@@ -69,15 +69,15 @@ def progress_path(
     short hash of it so that two inputs with the same name do not share a file.
 
     Args:
-        output_file: Main output path of the run (file or folder), if any.
+        output_path: Main output path of the run (file or folder), if any.
         input_path: Input document or folder, used when there is no output.
         input_text: Raw input text, used when there is neither.
 
     Returns:
         The progress file path.
     """
-    if output_file:
-        out = Path(output_file)
+    if output_path:
+        out = Path(output_path)
         return out.with_name(out.name + PROGRESS_SUFFIX)
     if input_path:
         stem, seed = Path(input_path).stem, str(Path(input_path).resolve())

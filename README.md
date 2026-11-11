@@ -72,7 +72,7 @@ from itertool.config import AppConfig
 
 preset = Preset(node_prompt="Summarize this section.", node_mode="section")
 config = AppConfig(provider="ollama", model_name="gemma4:12b")
-result = run_iter(input_path="doc.md", output_file="out.md", preset=preset, config=config)
+result = run_iter(input_path="doc.md", output_path="out.md", preset=preset, config=config)
 print(result.results)
 ```
 
@@ -85,7 +85,7 @@ print(result.results)
 run_iter(
     input_path: str | None = None,
     input_text: str | None = None,
-    output_file: str | None = None,
+    output_path: str | None = None,
     preset: Preset | None = None,
     config: AppConfig | None = None,
     context_file: str | None = None,
@@ -97,7 +97,7 @@ run_iter(
 |---|---|
 | `input_path` | The Markdown document to process, or a folder: see [Processing a folder](#processing-a-folder). |
 | `input_text` | Raw Markdown, as an alternative to `input_path`. One of the two is required. |
-| `output_file` | Where to write the composed result: a file, or a folder for a folder input in the mirror layout. Omit to only receive it in the return value. |
+| `output_path` | Where to write the composed result: a file, or a folder for a folder input in the mirror layout. Omit to only receive it in the return value. |
 | `preset` | The task: prompts, node mode, handling rules, output composition. Defaults to `Preset()`. |
 | `config` | Model and provider settings. Defaults to `AppConfig.load()`. |
 | `context_file` | A text file appended to the system prompt of every AI call, as reference context. See [Reference context](#reference-context). |
@@ -111,7 +111,7 @@ no Markdown file, or its output is misplaced; `FileNotFoundError` if `context_fi
 and `CheckpointMismatchError` (exported from `itertool`) when `on_mismatch` is `"ask"` and a
 progress file from a different run is found.
 
-`default_output_path(input_path, preset)` in `itertool.processor` gives the output name the CLI
+`default_output_path(input_path, preset)` in `itertool.output` gives the output name the CLI
 uses when `--output` is omitted.
 
 ### Processing a folder

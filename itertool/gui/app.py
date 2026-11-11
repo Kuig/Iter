@@ -808,7 +808,7 @@ if run_btn or resume_policy:
                 config.apply_to_client()
                 result = run_iter(
                     input_path=input_path,
-                    output_file=output_path or None,
+                    output_path=output_path or None,
                     preset=preset,
                     config=config,
                     context_file=context_path or None,

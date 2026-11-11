@@ -62,7 +62,7 @@ class TestTools(unittest.TestCase):
         self.assertEqual(kwargs["context_file"], "g.md")
 
     def test_completion_message_names_the_input(self):
-        reply, _ = self._call("iter_process_path", input_path="docs", output_file="out", node_prompt="p")
+        reply, _ = self._call("iter_process_path", input_path="docs", output_path="out", node_prompt="p")
         self.assertEqual(reply, "Done: docs processed to out.")
 
 

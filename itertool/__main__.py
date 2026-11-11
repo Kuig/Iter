@@ -8,7 +8,8 @@ from pathlib import Path
 
 from unified_ai_client import silence_sdks
 from itertool.checkpoint import CheckpointMismatchError
-from itertool.processor import default_output_path, run_iter
+from itertool.output import default_output_path
+from itertool.processor import run_iter
 from itertool.models import Preset
 from itertool.config import AppConfig
 import itertool.logger as logger
@@ -68,7 +69,7 @@ def cmd_run(args: argparse.Namespace) -> None:
 
         run_kwargs = dict(
             input_path=args.input,
-            output_file=args.output or default_output_path(args.input, preset),
+            output_path=args.output or default_output_path(args.input, preset),
             preset=preset,
             config=config,
             context_file=args.context,

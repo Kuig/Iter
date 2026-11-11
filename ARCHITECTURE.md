@@ -50,6 +50,7 @@ Iter/
 │   ├── markdown_utils.py      # Markdown parsing and block classification
 │   ├── models.py              # Preset, Corpus, Node, the results, cosine_similarity
 │   ├── mcp_tools.py           # MCP tool registrations
+│   ├── output.py              # Output composition and layouts, default output name
 │   ├── processor.py           # Core 3-phase processing pipeline
 │   └── gui/
 │       ├── app.py             # Streamlit web interface
@@ -208,7 +209,7 @@ corpus (one document, or the Markdown files of a folder)
     │
     ▼
 ┌─────────────────────────────────┐
-│  Output composition             │
+│  Output composition (output.py) │
 │  main output = one of:          │
 │    preprocessed / results /     │
 │    postprocessed                │

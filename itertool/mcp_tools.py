@@ -104,7 +104,7 @@ def register_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     def iter_process_path(
         input_path: str,
-        output_file: str | None = None,
+        output_path: str | None = None,
         node_prompt: str | None = None,
         node_mode: str | None = None,
         preprocessing_prompt: str | None = None,
@@ -121,7 +121,7 @@ def register_tools(mcp: FastMCP) -> None:
             input_path: Absolute path to the input Markdown file, or to a folder:
                 its .md and .markdown files directly inside it are processed in
                 natural order of their names.
-            output_file: Optional path where the main output will be saved: a
+            output_path: Optional path where the main output will be saved: a
                 file, or a folder for a folder input when the preset's
                 output_layout is 'mirror'. If None, the result text is returned
                 directly, each file of a folder under a '# File: <name>' header.
@@ -142,7 +142,7 @@ def register_tools(mcp: FastMCP) -> None:
                 'restart' discards them.
 
         Returns:
-            Processed text (if output_file is None) or a completion message.
+            Processed text (if output_path is None) or a completion message.
         """
         try:
             config = _build_config(config_file)
@@ -157,14 +157,14 @@ def register_tools(mcp: FastMCP) -> None:
             )
             result = run_iter(
                 input_path=input_path,
-                output_file=output_file,
+                output_path=output_path,
                 preset=preset,
                 config=config,
                 context_file=context_file,
                 on_mismatch=on_mismatch or "ask",
             )
-            if output_file:
-                return f"Done: {input_path} processed to {output_file}."
+            if output_path:
+                return f"Done: {input_path} processed to {output_path}."
             return result.postprocessed or result.results or result.preprocessed
         except CheckpointMismatchError as exc:
             return _mismatch_reply(exc)
@@ -174,7 +174,7 @@ def register_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     def iter_process_text(
         text: str,
-        output_file: str | None = None,
+        output_path: str | None = None,
         node_prompt: str | None = None,
         node_mode: str | None = None,
         preprocessing_prompt: str | None = None,
@@ -189,7 +189,7 @@ def register_tools(mcp: FastMCP) -> None:
 
         Args:
             text: The Markdown text to process.
-            output_file: Optional path to save the processed result.
+            output_path: Optional path to save the processed result.
                 If None, the result text is returned directly.
             node_prompt: Prompt applied to each node (paragraph, section, or
                 the whole text as one node).
@@ -209,7 +209,7 @@ def register_tools(mcp: FastMCP) -> None:
                 'restart' discards them.
 
         Returns:
-            Processed text (if output_file is None) or a completion message.
+            Processed text (if output_path is None) or a completion message.
         """
         try:
             config = _build_config(config_file)
@@ -224,14 +224,14 @@ def register_tools(mcp: FastMCP) -> None:
             )
             result = run_iter(
                 input_text=text,
-                output_file=output_file,
+                output_path=output_path,
                 preset=preset,
                 config=config,
                 context_file=context_file,
                 on_mismatch=on_mismatch or "ask",
             )
-            if output_file:
-                return f"Processed text saved to {output_file}."
+            if output_path:
+                return f"Processed text saved to {output_path}."
             return result.postprocessed or result.results or result.preprocessed
         except CheckpointMismatchError as exc:
             return _mismatch_reply(exc)

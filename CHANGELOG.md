@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prompt of every AI call, under `=== REFERENCE CONTEXT ===`. A changed context counts as a
   change of the run on resume.
 - `ProcessingResult.files` holds the results of each input file, and
-  `itertool.processor.default_output_path()` names the output of an input.
+  `itertool.output.default_output_path()` names the output of an input.
 - CLI: `iter run --input` accepts a folder, `--context FILE` sets the reference context,
   `--node-mode` accepts `file`, and `--output` is optional: it defaults to
   `<name>_processed<ext>` next to a file, and for a folder to `<folder>_processed` beside it
@@ -50,9 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `run_iter()` takes `input_path` instead of `input_file`, since the input can be a folder.
-  The MCP tool `iter_process_file` is renamed `iter_process_path`, and its `input_file`
-  parameter `input_path`.
+- `run_iter()` takes `input_path` instead of `input_file` and `output_path` instead of
+  `output_file`, since either can be a folder. The MCP tool `iter_process_file` is renamed
+  `iter_process_path`, and its `input_file` parameter `input_path`; both MCP tools take
+  `output_path` instead of `output_file`.
+- Output composition and writing moved from `itertool/processor.py` to a new
+  `itertool/output.py` module.
 - On resume, a document edited since the progress file was written gets a new Phase 1, instead
   of reusing the saved one.
 - The progress file format changed. A progress file written by an earlier version is discarded

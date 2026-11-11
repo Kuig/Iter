@@ -525,7 +525,7 @@ class _FolderRun(unittest.TestCase):
         preset = replace(preset, show_similarity_separator=False)
         with _EchoAi() as ai:
             result = processor.run_iter(
-                input_path=str(input_path or self.docs), output_file=output,
+                input_path=str(input_path or self.docs), output_path=output,
                 preset=preset, config=AppConfig(), **kwargs,
             )
         return result, ai
@@ -709,27 +709,6 @@ class TestReferenceContext(_FolderRun):
     def test_missing_file_stops_the_run(self):
         with self.assertRaises(FileNotFoundError):
             self._run(self.PRESET, context_file="absent.md")
-
-
-class TestDefaultOutputPath(_FolderRun):
-    """Without an explicit output, the name derives from the input and the layout."""
-
-    def test_file(self):
-        self.assertEqual(
-            processor.default_output_path(str(Path("docs") / "a.md"), Preset()),
-            str(Path("docs") / "a_processed.md"),
-        )
-
-    def test_folder_mirror(self):
-        self.assertEqual(
-            processor.default_output_path("docs", Preset()), str(self.dir.resolve() / "docs_processed")
-        )
-
-    def test_folder_merged(self):
-        self.assertEqual(
-            processor.default_output_path("docs", Preset(output_layout="merged")),
-            str(self.dir.resolve() / "docs_processed.md"),
-        )
 
 
 if __name__ == "__main__":
